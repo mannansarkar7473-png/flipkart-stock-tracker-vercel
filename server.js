@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const cheerio = require('cheerio');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -27,28 +28,15 @@ function checkAuth(req, res, next) {
   next();
 }
 
-let sessionCookies = '';
-let lastCookieFetch = 0;
+const USER_AGENTS = [
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+];
 
-async function refreshCookies() {
-  const now = Date.now();
-  if (sessionCookies && now - lastCookieFetch < 15 * 60 * 1000) return sessionCookies;
-  try {
-    const res = await axios.get('https://www.flipkart.com/', {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8'
-      },
-      timeout: 12000
-    });
-    const setCookies = res.headers['set-cookie'];
-    if (Array.isArray(setCookies)) {
-      sessionCookies = setCookies.map(c => c.split(';')[0]).join('; ');
-      lastCookieFetch = now;
-    }
-  } catch (e) {}
-  return sessionCookies;
+function getRandomUA() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
 function cleanFlipkartUrl(rawUrl) {
@@ -67,8 +55,15 @@ function cleanFlipkartUrl(rawUrl) {
   }
 }
 
+function parsePriceNumber(str) {
+  if (!str) return null;
+  const cleaned = String(str).replace(/[^0-9.]/g, '');
+  const num = parseFloat(cleaned);
+  return !isNaN(num) && num > 0 ? Math.round(num) : null;
+}
+
 // =========================================================================
-// RICH TELEGRAM ALERT (WITH PRODUCT PHOTO & DIRECT INLINE BUY BUTTON)
+// RICH TELEGRAM ALERT (PRODUCT PHOTO + INLINE BUY BUTTON)
 // =========================================================================
 async function sendTelegram(product, info, heading) {
   const title = (info.title || product.name || 'Flipkart Product').replace(/[*_`\[\]()]/g, '');
@@ -105,9 +100,7 @@ async function sendTelegram(product, info, heading) {
       }, { timeout: 12000 });
       if (r.data?.ok) return { ok: true };
     }
-  } catch (e) {
-    // Fallback to sendMessage if photo URL fails
-  }
+  } catch (e) {}
 
   try {
     const r = await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -125,299 +118,244 @@ async function sendTelegram(product, info, heading) {
 }
 
 // =========================================================================
-// LAYER 1: HTML SCHEMA.ORG (ld+json) & INITIAL_STATE VERIFIER
+// ENGINE 1: CHEERIO DOM + LD+JSON + INITIAL_STATE PARSER (GitHub Scraper Flow)
 // =========================================================================
-async function fetchHtmlSchema(productUrl, cookies) {
-  try {
-    const res = await axios.get(productUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8',
-        ...(cookies ? { Cookie: cookies } : {})
-      },
-      timeout: 14000
-    });
-
-    const html = String(res.data || '');
-    let title = null;
-    let price = null;
-    let image = null;
-    let schemaInStock = null;
-
-    // Extract application/ld+json Product Schema (100% Main Product, Zero Ads)
-    const ldMatches = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
-    for (const block of ldMatches) {
-      try {
-        const cleanJson = block.replace(/<script[^>]*>|<\/script>/gi, '').trim();
-        const parsed = JSON.parse(cleanJson);
-        const items = Array.isArray(parsed) ? parsed : [parsed];
-        for (const item of items) {
-          if (item['@type'] === 'Product') {
-            if (item.name) title = item.name;
-            if (item.image) image = Array.isArray(item.image) ? item.image[0] : item.image;
-            const offers = Array.isArray(item.offers) ? item.offers[0] : item.offers;
-            if (offers) {
-              if (offers.price) price = Number(offers.price);
-              if (offers.availability) {
-                const av = String(offers.availability);
-                if (av.includes('InStock')) schemaInStock = true;
-                else if (av.includes('OutOfStock')) schemaInStock = false;
-              }
-            }
-          }
-        }
-      } catch (e) {}
-    }
-
-    return { title, price, image, schemaInStock };
-  } catch (e) {
-    return { title: null, price: null, image: null, schemaInStock: null };
-  }
-}
-
-// =========================================================================
-// LAYER 2: STRICT PID-LOCKED FLIPKART API PARSER (PINCODE + MRP + STOCK)
-// =========================================================================
-function parseFlipkartApiStrict(data, targetPid, targetLid) {
-  let inStock = false;
-  let oosExplicit = false;
-  let foundSignal = false;
+function extractFromHtml(html, targetPid) {
+  const $ = cheerio.load(html);
   let title = null;
   let price = null;
   let mrp = null;
   let discount = 0;
   let image = null;
+  let inStock = null;
 
-  // 1. Primary Page Context (Guaranteed Main Product Metadata)
-  const pageCtx = data?.RESPONSE?.pageData?.pageContext;
-  if (pageCtx) {
-    const ctxPid = pageCtx.productId || pageCtx.trackingDataV2?.productId;
-    if (!targetPid || !ctxPid || ctxPid === targetPid) {
-      if (pageCtx.titles?.title) title = pageCtx.titles.title;
-      if (pageCtx.imageUrl) {
-        image = pageCtx.imageUrl.replace('{@width}', '416').replace('{@height}', '416').replace('{@quality}', '70');
-      }
-      if (pageCtx.pricing) {
-        const p = pageCtx.pricing;
-        price = Number(p.finalPrice?.value || p.specialPrice?.value || p.price?.value || 0) || null;
-        if (p.mrp?.value) mrp = Number(p.mrp.value);
-        if (p.totalDiscount || p.discount) discount = Number(p.totalDiscount || p.discount);
-        if (Array.isArray(p.prices)) {
-          for (const pr of p.prices) {
-            if ((pr.priceType === 'FSP' || pr.priceType === 'SPECIAL_PRICE') && pr.value && !price) price = Number(pr.value);
-            if (pr.priceType === 'MRP' && pr.value && !mrp) mrp = Number(pr.value);
-            if (pr.discount && !discount) discount = Number(pr.discount);
+  // 1A. Schema.org application/ld+json (Exact Main Product, Zero Ads)
+  $('script[type="application/ld+json"]').each((_, el) => {
+    try {
+      const raw = $(el).html();
+      if (!raw) return;
+      const parsed = JSON.parse(raw.trim());
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      for (const item of items) {
+        if (item['@type'] === 'Product') {
+          if (item.name && !title) title = item.name.trim();
+          if (item.image && !image) {
+            image = Array.isArray(item.image) ? item.image[0] : item.image;
           }
-        }
-      }
-      const td = pageCtx.trackingDataV2;
-      if (td) {
-        if (!price && td.sellingPrice) price = Number(td.sellingPrice);
-        if (!mrp && td.mrp) mrp = Number(td.mrp);
-        if (!discount && td.discount) discount = Number(td.discount);
-        if (td.productStatus) {
-          const st = String(td.productStatus).toUpperCase();
-          if (st.includes('OUT_OF_STOCK') || st.includes('SOLD_OUT') || st.includes('NOT_AVAILABLE')) {
-            oosExplicit = true;
-            foundSignal = true;
-          } else if (st.includes('IN_STOCK') || st.includes('AVAILABLE')) {
-            inStock = true;
-            foundSignal = true;
-          }
-        }
-      }
-    }
-  }
-
-  // 2. Strict PID-Locked Slot Scanner (Ignores Chargers, Variants, Ads & Similar Items)
-  const slots = data?.RESPONSE?.slots;
-  if (Array.isArray(slots)) {
-    for (const slot of slots) {
-      const w = slot?.widget;
-      if (!w || !w.data) continue;
-      const wType = String(w.type || '').toUpperCase();
-
-      // Strictly skip non-primary widgets
-      if (
-        wType.includes('AD') ||
-        wType.includes('SIMILAR') ||
-        wType.includes('RECOMMEND') ||
-        wType.includes('CROSS_SELL') ||
-        wType.includes('BOUGHT_TOGETHER') ||
-        wType.includes('BANNER') ||
-        wType.includes('RECENTLY') ||
-        wType.includes('SWATCH')
-      ) continue;
-
-      function scanStrict(node, depth = 0) {
-        if (!node || typeof node !== 'object' || depth > 18) return;
-
-        // STRICT TARGET LOCK: If node belongs to a different productId or listingId, abort branch immediately!
-        if (targetPid && node.productId && node.productId !== targetPid) return;
-        if (targetPid && node.pid && node.pid !== targetPid) return;
-        if (targetLid && node.listingId && node.listingId !== targetLid) return;
-
-        if (!title && node.titles && typeof node.titles.title === 'string') {
-          title = node.titles.title;
-        }
-
-        if (node.pricing && typeof node.pricing === 'object') {
-          const p = node.pricing;
-          if (!price) price = Number(p.finalPrice?.value || p.specialPrice?.value || p.price?.value || 0) || null;
-          if (!mrp && p.mrp?.value) mrp = Number(p.mrp.value);
-          if (!discount && (p.totalDiscount || p.discount)) discount = Number(p.totalDiscount || p.discount);
-          if (Array.isArray(p.prices)) {
-            for (const pr of p.prices) {
-              if ((pr.priceType === 'FSP' || pr.priceType === 'SPECIAL_PRICE') && pr.value && !price) price = Number(pr.value);
-              if (pr.priceType === 'MRP' && pr.value && !mrp) mrp = Number(pr.value);
-              if (pr.discount && !discount) discount = Number(pr.discount);
+          const offers = Array.isArray(item.offers) ? item.offers[0] : item.offers;
+          if (offers) {
+            if (offers.price && !price) price = parsePriceNumber(offers.price);
+            if (offers.availability) {
+              const av = String(offers.availability);
+              if (av.includes('InStock')) inStock = true;
+              else if (av.includes('OutOfStock')) inStock = false;
             }
           }
         }
-        if (node.priceType === 'FSP' && node.value && !price) price = Number(node.value);
-        if (node.priceType === 'MRP' && node.value && !mrp) mrp = Number(node.value);
-
-        // Action buttons locked to targetPid
-        if (node.action && typeof node.action === 'object') {
-          const btnPid = node.action.params?.productId || node.action.params?.pid;
-          if (!targetPid || !btnPid || btnPid === targetPid) {
-            if (node.action.type === 'BUY_NOW' || node.action.type === 'ADD_TO_CART') {
-              inStock = true;
-              foundSignal = true;
-            } else if (node.action.type === 'NOTIFY_ME') {
-              oosExplicit = true;
-              foundSignal = true;
-            }
-          }
-        }
-
-        if (node.availabilityStatus === 'IN_STOCK') {
-          inStock = true;
-          foundSignal = true;
-        } else if (node.availabilityStatus === 'OUT_OF_STOCK' || node.availabilityStatus === 'COMING_SOON') {
-          oosExplicit = true;
-          foundSignal = true;
-        }
-
-        if (Array.isArray(node)) node.forEach(x => scanStrict(x, depth + 1));
-        else Object.keys(node).forEach(k => scanStrict(node[k], depth + 1));
       }
+    } catch (e) {}
+  });
 
-      scanStrict(w);
+  // 1B. Flipkart HTML DOM Selectors (Both Modern & Classic Classes)
+  const titleSelectors = ['span.VU-ZEz', 'span.B_NuCI', 'h1._6EBuvT span', 'h1'];
+  for (const sel of titleSelectors) {
+    const t = $(sel).first().text().trim();
+    if (t && t.length > 3 && !title) {
+      title = t.replace(/\s+/g, ' ');
+      break;
     }
   }
 
-  return {
-    inStock: inStock && !oosExplicit,
-    oosExplicit,
-    foundSignal,
-    title,
-    price,
-    mrp,
-    discount,
-    image
-  };
+  const priceSelectors = ['div.Nx9bqj.CxhGGd', 'div.Nx9bqj', 'div._30jeq3._16Jk6d', 'div._30jeq3'];
+  for (const sel of priceSelectors) {
+    const p = parsePriceNumber($(sel).first().text());
+    if (p && !price) {
+      price = p;
+      break;
+    }
+  }
+
+  const mrpSelectors = ['div.yRaY8j.A6\\+E6v', 'div.yRaY8j', 'div._3I9_wc._2p6lqe', 'div._3I9_wc'];
+  for (const sel of mrpSelectors) {
+    const m = parsePriceNumber($(sel).first().text());
+    if (m && (!price || m >= price) && !mrp) {
+      mrp = m;
+      break;
+    }
+  }
+
+  const discSelectors = ['div.UkUFwK.WW8yVX span', 'div.UkUFwK span', 'div._3Ay6Sb._31Dcoz span', 'div._3Ay6Sb span'];
+  for (const sel of discSelectors) {
+    const dText = $(sel).first().text();
+    const match = dText.match(/(\d+)\s*%/);
+    if (match && !discount) {
+      discount = Number(match[1]);
+      break;
+    }
+  }
+
+  if (!image) {
+    const imgSrc = $('img.DByuf4.IZexXJ').attr('src') || $('img._396cs4._2amPTt._3qGmMb').attr('src') || $('meta[property="og:image"]').attr('content');
+    if (imgSrc && imgSrc.startsWith('http')) image = imgSrc;
+  }
+
+  // 1C. Stock Detection from Main Action Buttons & Status Text
+  const bodyText = $('body').text();
+  const hasBuyBtn =
+    $('button:contains("Buy Now")').length > 0 ||
+    $('button:contains("BUY NOW")').length > 0 ||
+    $('button:contains("Add to cart")').length > 0 ||
+    $('button:contains("ADD TO CART")').length > 0 ||
+    $('button:contains("Go to cart")').length > 0;
+
+  const hasOosText =
+    bodyText.includes('Currently out of stock') ||
+    bodyText.includes('Sold Out') ||
+    $('button:contains("Notify Me")').length > 0 ||
+    $('button:contains("NOTIFY ME")').length > 0;
+
+  if (hasOosText) inStock = false;
+  else if (hasBuyBtn) inStock = true;
+
+  // 1D. Embedded window.__INITIAL_STATE__ JSON Extraction (PID Locked)
+  const stateMatch = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});\s*<\/script>/);
+  if (stateMatch && stateMatch[1]) {
+    try {
+      const state = JSON.parse(stateMatch[1]);
+      const pageCtx = state?.pageDataV4?.page?.pageData?.pageContext;
+      if (pageCtx) {
+        if (!title && pageCtx.titles?.title) title = pageCtx.titles.title;
+        const td = pageCtx.trackingDataV2;
+        if (td && (!targetPid || !td.productId || td.productId === targetPid)) {
+          if (!price && td.sellingPrice) price = Number(td.sellingPrice);
+          if (!mrp && td.mrp) mrp = Number(td.mrp);
+          if (!discount && td.discount) discount = Number(td.discount);
+          if (inStock === null && td.productStatus) {
+            const st = String(td.productStatus).toUpperCase();
+            if (st.includes('OUT_OF_STOCK') || st.includes('SOLD_OUT')) inStock = false;
+            else if (st.includes('IN_STOCK')) inStock = true;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (mrp && price && mrp > price) {
+    discount = Math.round(((mrp - price) / mrp) * 100);
+  }
+
+  return { title, price, mrp, discount, image, inStock };
 }
 
 // =========================================================================
-// DUAL-SOURCE MERGER (Combines Schema.org + PID-Locked API for 100% Accuracy)
+// ENGINE 2: PINCODE SERVICEABILITY CHECK (1.rome.api / dynamic product)
 // =========================================================================
-async function fetchProductSniper(product) {
-  const cookies = await refreshCookies();
+async function checkPincodeAvailability(product, lid) {
+  if (!lid) return null;
+  try {
+    const res = await axios.post(
+      'https://1.rome.api.flipkart.com/api/3/page/dynamic/product',
+      {
+        requestContext: {
+          productId: product.pid || undefined,
+          listingId: lid
+        },
+        locationContext: {
+          pincode: String(product.pincode)
+        }
+      },
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'X-User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 FKUA/website/42/website/Desktop',
+          'Content-Type': 'application/json',
+          'Origin': 'https://www.flipkart.com',
+          'Referer': product.url
+        },
+        timeout: 10000
+      }
+    );
+
+    const raw = JSON.stringify(res.data || {});
+    if (raw.includes('"NOT_SERVICEABLE"') || raw.includes('"OUT_OF_STOCK"') || raw.includes('"Currently out of stock"')) {
+      return false;
+    }
+    if (raw.includes('"BUY_NOW"') || raw.includes('"ADD_TO_CART"') || raw.includes('"IN_STOCK"')) {
+      return true;
+    }
+  } catch (e) {}
+  return null;
+}
+
+// =========================================================================
+// MASTER HYBRID FETCHER (Desktop HTML -> Mobile dl.flipkart -> Pincode Check)
+// =========================================================================
+async function fetchProductHybrid(product) {
   const u = new URL(product.url);
   const pid = product.pid || u.searchParams.get('pid');
   const lid = product.lid || u.searchParams.get('lid');
-  const pageUri = u.pathname + u.search;
 
-  // Run API & HTML Schema checks in parallel for speed + dual accuracy
-  const apiPromise = (async () => {
-    const endpoints = [
-      {
-        url: 'https://2.rome.api.flipkart.com/api/4/page/fetch',
-        ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
-        xua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 FKUA/msite/0.0.3/msite/Mobile'
-      },
-      {
-        url: 'https://1.rome.api.flipkart.com/api/4/page/fetch',
-        ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        xua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 FKUA/website/42/website/Desktop'
-      }
-    ];
+  const urlsToTry = [
+    { url: product.url, label: 'Desktop DOM' },
+    { url: product.url.replace('www.flipkart.com', 'dl.flipkart.com/dl'), label: 'Mobile Lite DOM' }
+  ];
 
-    for (const ep of endpoints) {
-      try {
-        const res = await axios.post(
-          ep.url,
-          { pageUri, locationContext: { pincode: String(product.pincode) }, isReloadRequest: true },
-          {
-            headers: {
-              'User-Agent': ep.ua,
-              'X-User-Agent': ep.xua,
-              'Content-Type': 'application/json',
-              'Origin': 'https://www.flipkart.com',
-              'Referer': 'https://www.flipkart.com/',
-              ...(cookies ? { Cookie: cookies } : {})
-            },
-            timeout: 14000
-          }
-        );
-        const parsed = parseFlipkartApiStrict(res.data, pid, lid);
-        if (parsed.foundSignal || parsed.price) return parsed;
-      } catch (e) {
-        sessionCookies = '';
+  let bestData = null;
+
+  for (const target of urlsToTry) {
+    try {
+      const res = await axios.get(target.url, {
+        headers: {
+          'User-Agent': getRandomUA(),
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache',
+          'Upgrade-Insecure-Requests': '1'
+        },
+        maxRedirects: 5,
+        timeout: 15000
+      });
+
+      const html = String(res.data || '');
+      if (html.includes('captcha') || html.includes('Are you a human')) {
+        continue;
       }
+
+      const extracted = extractFromHtml(html, pid);
+      if (extracted.price || extracted.title || extracted.inStock !== null) {
+        bestData = { ...extracted, source: target.label };
+        break;
+      }
+    } catch (err) {
+      // Try next URL in fallback chain
     }
-    return null;
-  })();
-
-  const schemaPromise = fetchHtmlSchema(product.url, cookies);
-
-  const [apiData, schemaData] = await Promise.all([apiPromise, schemaPromise]);
-
-  if (!apiData && !schemaData?.price && schemaData?.schemaInStock === null) {
-    return { ok: false, error: 'Retrying in next cycle' };
   }
 
-  // Merge with strict priority: Schema title/price prevents charger/accessory contamination!
-  const finalTitle = schemaData?.title || apiData?.title || null;
-  const finalPrice = schemaData?.price || apiData?.price || null;
-  const finalMrp = apiData?.mrp && (!finalPrice || apiData.mrp >= finalPrice) ? apiData.mrp : null;
-  const finalImage = schemaData?.image || apiData?.image || null;
-
-  let finalDiscount = apiData?.discount || 0;
-  if (finalMrp && finalPrice && finalMrp > finalPrice) {
-    finalDiscount = Math.round(((finalMrp - finalPrice) / finalMrp) * 100);
+  // Verify Pincode delivery availability if lid is available
+  const pinStock = await checkPincodeAvailability({ ...product, pid }, lid);
+  if (pinStock !== null) {
+    if (!bestData) bestData = { title: null, price: null, mrp: null, discount: 0, image: null, source: 'Pincode API' };
+    bestData.inStock = pinStock;
   }
 
-  // Stock signal: API pincode result takes priority; fallback to Schema availability
-  let finalInStock = false;
-  let hasClearStock = false;
-
-  if (apiData && apiData.foundSignal) {
-    finalInStock = apiData.inStock;
-    hasClearStock = true;
-  } else if (schemaData && schemaData.schemaInStock !== null) {
-    finalInStock = schemaData.schemaInStock;
-    hasClearStock = true;
-  }
-
-  if (!hasClearStock) {
-    return { ok: false, error: 'Ambiguous stock signal, retrying' };
+  if (!bestData || (bestData.inStock === null && !bestData.price)) {
+    return { ok: false, error: 'Flipkart temporary block / retrying in 35s' };
   }
 
   return {
     ok: true,
-    inStock: finalInStock,
-    title: finalTitle,
-    price: finalPrice,
-    mrp: finalMrp,
-    discount: finalDiscount,
-    image: finalImage
+    inStock: bestData.inStock === null ? true : bestData.inStock,
+    title: bestData.title,
+    price: bestData.price,
+    mrp: bestData.mrp,
+    discount: bestData.discount || 0,
+    image: bestData.image,
+    source: bestData.source
   };
 }
 
-// Safe Supabase Update (Gracefully handles optional columns)
+// Safe Supabase Update
 async function safeUpdateProduct(id, updates) {
   const { error } = await supabase.from('tracked_products').update(updates).eq('id', id);
   if (error) {
@@ -450,7 +388,7 @@ async function checkAllProducts() {
     if (error || !products || products.length === 0) return;
 
     for (const p of products) {
-      const res = await fetchProductSniper(p);
+      const res = await fetchProductHybrid(p);
       const nowIso = new Date().toISOString();
 
       if (!res.ok) {
@@ -458,6 +396,7 @@ async function checkAllProducts() {
           last_checked_at: nowIso,
           error_message: res.error
         });
+        console.log(`⚠️ [${p.pincode}] ${p.name}: ${res.error}`);
         continue;
       }
 
@@ -481,7 +420,7 @@ async function checkAllProducts() {
 
       if (!res.inStock) {
         updates.status = 'OUT_OF_STOCK';
-        updates.alert_sent = false; // Auto re-arm for stock arrival
+        updates.alert_sent = false;
       } else {
         if (p.mode === 'PRICE') {
           const targetP = Number(p.target_price) || 0;
@@ -497,7 +436,7 @@ async function checkAllProducts() {
             }
           } else {
             updates.status = 'WAITING_PRICE';
-            updates.alert_sent = false; // Auto re-arm if price goes up and drops again
+            updates.alert_sent = false;
           }
         } else if (p.mode === 'DISCOUNT') {
           const targetD = Number(p.target_discount) || 0;
@@ -513,10 +452,9 @@ async function checkAllProducts() {
             }
           } else {
             updates.status = 'WAITING_DISCOUNT';
-            updates.alert_sent = false; // Auto re-arm if discount drops and rises again
+            updates.alert_sent = false;
           }
         } else {
-          // STOCK MODE: Triggers as soon as product is IN_STOCK
           updates.status = 'IN_STOCK';
           if (!p.alert_sent) {
             updates.alert_sent = true;
@@ -530,7 +468,7 @@ async function checkAllProducts() {
       }
 
       await safeUpdateProduct(p.id, updates);
-      console.log(`🎯 [${p.pincode}] ${updates.name || p.name} | ${updates.status} | Price: ₹${updates.last_price || '-'} | MRP: ₹${updates.last_mrp || '-'} | Disc: ${updates.last_discount}%`);
+      console.log(`✅ [${res.source}] [${p.pincode}] ${updates.name || p.name} | ${updates.status} | ₹${updates.last_price || '-'} | ${updates.last_discount}% OFF`);
       await new Promise(r => setTimeout(r, 3500));
     }
   } catch (e) {
@@ -543,14 +481,14 @@ async function checkAllProducts() {
 setInterval(checkAllProducts, CHECK_INTERVAL_SEC * 1000);
 
 // =========================================================================
-// SNIPER DASHBOARD UI (WITH THUMBNAIL, LOWEST PRICE & PID LOCK BADGE)
+// DASHBOARD UI (WITH DIAGNOSTIC STATUS & INSTANT CHECK BUTTON)
 // =========================================================================
 const HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Flipkart Sniper 24×7 Tracker</title>
+  <title>Flipkart Hybrid Sniper 24×7</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8">
@@ -559,12 +497,13 @@ const HTML = `<!DOCTYPE html>
       <div>
         <div class="flex items-center gap-2.5">
           <span class="h-3 w-3 rounded-full bg-emerald-500 animate-pulse"></span>
-          <h1 class="text-2xl font-bold text-blue-400">Flipkart Sniper 24×7 Tracker</h1>
-          <span class="text-xs px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">PID-Locked Dual Engine</span>
+          <h1 class="text-2xl font-bold text-blue-400">Flipkart Hybrid Sniper 24×7</h1>
+          <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">Cheerio DOM + Mobile + Schema</span>
         </div>
         <p class="text-xs text-slate-400 mt-1">Har 35s mein live check • Exact Price, MRP, Discount % & Stock Arrival par Telegram Deal Card</p>
       </div>
       <div class="flex gap-2">
+        <button onclick="forceCheck()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg text-sm font-medium cursor-pointer">Scan Now</button>
         <button onclick="testTg()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg text-sm font-medium cursor-pointer">Test Telegram</button>
         <button onclick="logout()" class="bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-lg text-sm cursor-pointer">Logout</button>
       </div>
@@ -573,7 +512,7 @@ const HTML = `<!DOCTYPE html>
     <!-- Login Box -->
     <div id="loginBox" class="max-w-sm mx-auto bg-slate-900 border border-slate-800 rounded-xl p-6 mt-12 hidden">
       <h2 class="text-lg font-semibold mb-1">Admin Login</h2>
-      <p class="text-xs text-slate-400 mb-3">Default Password: <code class="text-blue-400">admin123</code></p>
+      <p class="text-xs text-slate-400 mb-3">Password: <code class="text-blue-400">admin123</code></p>
       <input type="password" id="pwd" placeholder="Enter Password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm mb-3" />
       <button onclick="doLogin()" class="w-full bg-blue-600 hover:bg-blue-500 py-2.5 rounded-lg text-sm font-medium cursor-pointer">Login</button>
       <p id="loginErr" class="text-rose-400 text-xs mt-2"></p>
@@ -620,7 +559,7 @@ const HTML = `<!DOCTYPE html>
 
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-base font-semibold text-slate-200">Active Tracking List (Live Verified Data)</h2>
-        <button onclick="loadList()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded cursor-pointer">Refresh Now</button>
+        <button onclick="loadList()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded cursor-pointer">Refresh List</button>
       </div>
       <div id="list" class="space-y-3"></div>
     </div>
@@ -666,6 +605,11 @@ const HTML = `<!DOCTYPE html>
       location.reload();
     }
 
+    async function forceCheck() {
+      await api('/api/scan-now', { method: 'POST' });
+      setTimeout(loadList, 2500);
+    }
+
     async function loadList() {
       const res = await api('/api/products');
       if (!res.ok) {
@@ -702,6 +646,10 @@ const HTML = `<!DOCTYPE html>
           ? '<img src="' + p.image_url + '" class="w-14 h-14 object-contain bg-white rounded-lg p-1 shrink-0" />'
           : '<div class="w-14 h-14 bg-slate-800 rounded-lg flex items-center justify-center text-xs text-slate-500 shrink-0">FK</div>';
 
+        const errLine = p.error_message
+          ? '<div class="text-xs text-amber-400 mt-1">⚠️ ' + p.error_message + '</div>'
+          : '';
+
         return \`
           <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
             <div class="flex items-start gap-3.5">
@@ -720,6 +668,7 @@ const HTML = `<!DOCTYPE html>
                   <span>📉 Lowest: <b class="text-blue-300">\${p.lowest_price ? '₹' + Number(p.lowest_price).toLocaleString('en-IN') : '-'}</b></span>
                   <span>🕒 \${p.last_checked_at ? new Date(p.last_checked_at).toLocaleTimeString('en-IN') : 'Checking...'}</span>
                 </div>
+                \${errLine}
               </div>
             </div>
             <div class="flex items-center gap-2 shrink-0 self-end md:self-center">
@@ -780,12 +729,17 @@ const HTML = `<!DOCTYPE html>
 // API ROUTES
 // =========================================================================
 app.get('/', (req, res) => res.type('html').send(HTML));
-app.get('/ping', (req, res) => res.send('OK - Sniper 24x7 Active'));
+app.get('/ping', (req, res) => res.send('OK - Hybrid Sniper 24x7 Active'));
 
 app.get('/api/products', checkAuth, async (req, res) => {
   const { data, error } = await supabase.from('tracked_products').select('*').order('created_at', { ascending: false });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
+});
+
+app.post('/api/scan-now', checkAuth, async (req, res) => {
+  checkAllProducts();
+  res.json({ started: true });
 });
 
 app.post('/api/products', checkAuth, async (req, res) => {
@@ -837,17 +791,17 @@ app.post('/api/test-telegram', checkAuth, async (req, res) => {
   const r = await sendTelegram(
     { name: 'Test Product', pincode: '462023', url: 'https://www.flipkart.com' },
     {
-      title: 'Apple iPhone 17 (Lavender, 256 GB)',
-      price: 82900,
-      mrp: 89900,
-      discount: 8
+      title: 'Hybrid Sniper 24x7 Tracker Connected!',
+      price: 946,
+      mrp: 1099,
+      discount: 14
     },
-    'SNIPER BOT ACTIVE & CONNECTED!'
+    'HYBRID SNIPER ACTIVE!'
   );
   res.status(r.ok ? 200 : 500).json(r);
 });
 
 app.listen(PORT, () => {
-  console.log(`🎯 Flipkart Sniper Tracker Live on Port ${PORT}`);
+  console.log(`🚀 Hybrid Sniper Tracker Live on Port ${PORT}`);
   checkAllProducts();
 });
