@@ -1,6 +1,6 @@
 {
-  "name": "flipkart-24x7-pro-tracker",
-  "version": "3.0.0",
+  "name": "flipkart-hybrid-sniper",
+  "version": "5.0.0",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -8,6 +8,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
     "axios": "^1.7.9",
+    "cheerio": "^1.0.0",
     "express": "^4.21.2"
   }
 }
