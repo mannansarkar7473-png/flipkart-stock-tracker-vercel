@@ -506,11 +506,339 @@ const HTML = `<!DOCTYPE html>
       <p id="loginErr" class="text-rose-400 text-xs mt-2"></p>
     </div>
 
-    <!-- Main App -->
+  <!-- Main App -->
     <div id="appBox" class="hidden">
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6 shadow-lg">
         <h2 class="text-base font-semibold mb-4 text-slate-200">+ Naya Product Track Karein</h2>
         <form id="addForm" class="grid grid-cols-1 md:grid-cols-12 gap-3">
           <div class="md:col-span-6">
             <label class="text-xs text-slate-400">Flipkart Product Link *</label>
-            <input type="url" id="url" required plac
+            <input type="url" id="url" required placeholder="https://www.flipkart.com/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white" />
+          </div>
+          <div class="md:col-span-2">
+            <label class="text-xs text-slate-400">Pin Code *</label>
+            <input type="text" id="pincode" required maxlength="6" pattern="[0-9]{6}" value="462023" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white" />
+          </div>
+          <div class="md:col-span-4">
+            <label class="text-xs text-slate-400">Alert Condition *</label>
+            <select id="mode" onchange="toggleInputs()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white">
+              <option value="STOCK">1. Stock Alert (Stock Aane Par)</option>
+              <option value="PRICE">2. Target Price (₹ Kam Hone Par)</option>
+            </select>
+          </div>
+          <div id="priceDiv" class="md:col-span-4 hidden">
+            <label class="text-xs text-emerald-400">Target Max Price (₹) *</label>
+            <input type="number" id="targetPrice" min="1" placeholder="e.g. 800 (₹800 ya niche aane par)" class="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-sm mt-1 text-white" />
+          </div>
+          <div id="nameDiv" class="md:col-span-12">
+            <label class="text-xs text-slate-400">Product Name (Optional - Auto Detect Hoga)</label>
+            <input type="text" id="name" placeholder="Auto detect from Flipkart" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white" />
+          </div>
+          <div class="md:col-span-12 flex justify-end">
+            <button type="submit" class="bg-blue-600 hover:bg-blue-500 px-6 py-2.5 rounded-lg text-sm font-medium cursor-pointer">Tracking List Mein Jodein</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-base font-semibold text-slate-200">Active Tracking List (Auto-Refreshing)</h2>
+        <button type="button" onclick="loadList()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded cursor-pointer">Refresh List</button>
+      </div>
+      <div id="list" class="space-y-3"></div>
+    </div>
+  </div>
+
+  <script>
+    var token = localStorage.getItem('fk_pass') || '';
+
+    function toggleInputs() {
+      var m = document.getElementById('mode').value;
+      var pDiv = document.getElementById('priceDiv');
+      var pIn = document.getElementById('targetPrice');
+      if (m === 'PRICE') {
+        pDiv.classList.remove('hidden');
+        pIn.required = true;
+        document.getElementById('nameDiv').className = 'md:col-span-8';
+      } else {
+        pDiv.classList.add('hidden');
+        pIn.required = false;
+        document.getElementById('nameDiv').className = 'md:col-span-12';
+      }
+    }
+
+    function api(url, opts) {
+      opts = opts || {};
+      opts.headers = Object.assign({}, opts.headers || {}, {
+        'Authorization': 'Bearer ' + token,
+        'Content-Type': 'application/json'
+      });
+      return fetch(url, opts);
+    }
+
+    function showLogin(msg) {
+      document.getElementById('appBox').classList.add('hidden');
+      document.getElementById('loginBox').classList.remove('hidden');
+      if (msg) document.getElementById('loginErr').innerText = msg;
+    }
+
+    function doLogin() {
+      token = document.getElementById('pwd').value.trim();
+      if (!token) {
+        document.getElementById('loginErr').innerText = 'Password enter karein';
+        return;
+      }
+      api('/api/products').then(function(res) {
+        if (res.ok) {
+          localStorage.setItem('fk_pass', token);
+          document.getElementById('loginBox').classList.add('hidden');
+          document.getElementById('appBox').classList.remove('hidden');
+          loadList();
+        } else {
+          document.getElementById('loginErr').innerText = 'Wrong Password! (Default: admin123)';
+        }
+      }).catch(function() {
+        document.getElementById('loginErr').innerText = 'Server se connect nahi ho paya';
+      });
+    }
+
+    function logout() {
+      localStorage.removeItem('fk_pass');
+      token = '';
+      showLogin('');
+    }
+
+    function forceCheck() {
+      if (!token) { showLogin('Pehle login karein'); return; }
+      var btn = document.getElementById('scanBtn');
+      btn.innerText = 'Scanning...';
+      api('/api/scan-now', { method: 'POST' }).finally(function() {
+        setTimeout(function() {
+          btn.innerText = 'Scan Now';
+          loadList();
+        }, 4500);
+      });
+    }
+
+    function escHtml(s) {
+      return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function loadList() {
+      if (!token) { showLogin(''); return; }
+      api('/api/products').then(function(res) {
+        if (!res.ok) {
+          localStorage.removeItem('fk_pass');
+          token = '';
+          showLogin('Session expired, dubara login karein');
+          return null;
+        }
+        document.getElementById('loginBox').classList.add('hidden');
+        document.getElementById('appBox').classList.remove('hidden');
+        return res.json();
+      }).then(function(items) {
+        if (!items) return;
+        var box = document.getElementById('list');
+        if (!items.length) {
+          box.innerHTML = '<div class="text-center py-8 text-slate-500 text-sm bg-slate-900 border border-slate-800 rounded-xl">Abhi koi product add nahi hai. Upar link aur pincode daal kar add karein.</div>';
+          return;
+        }
+        var html = '';
+        for (var i = 0; i < items.length; i++) {
+          var p = items[i];
+          var statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">' + escHtml(p.status) + '</span>';
+          if (p.status === 'IN_STOCK' || p.status === 'PRICE_HIT') {
+            statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold">' + escHtml(p.status) + ' ✅</span>';
+          } else if (p.status === 'OUT_OF_STOCK') {
+            statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">OUT OF STOCK</span>';
+          } else if (p.status === 'WAITING_PRICE') {
+            statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">In Stock (Waiting ≤ ₹' + escHtml(p.target_price) + ')</span>';
+          }
+
+          var targetTag = '<span class="px-2 py-0.5 text-xs rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">Mode: Stock Alert</span>';
+          if (p.mode === 'PRICE') {
+            targetTag = '<span class="px-2 py-0.5 text-xs rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">Target Price: ≤ ₹' + escHtml(p.target_price) + '</span>';
+          }
+
+          var thumb = p.image_url
+            ? '<img src="' + escHtml(p.image_url) + '" class="w-14 h-14 object-contain bg-white rounded-lg p-1 shrink-0" />'
+            : '<div class="w-14 h-14 bg-slate-800 rounded-lg flex items-center justify-center text-xs text-slate-500 shrink-0">FK</div>';
+
+          var offersHtml = p.offers_text
+            ? '<div class="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-2.5 py-1 mt-1.5">🎁 <b>Offers:</b> ' + escHtml(p.offers_text) + '</div>'
+            : '';
+
+          var errLine = p.error_message
+            ? '<div class="text-xs text-rose-400 mt-1">⚠️ ' + escHtml(p.error_message) + '</div>'
+            : '';
+
+          var priceStr = p.last_price ? '₹' + Number(p.last_price).toLocaleString('en-IN') : '-';
+          var mrpStr = p.last_mrp ? '₹' + Number(p.last_mrp).toLocaleString('en-IN') : '-';
+          var lowStr = p.lowest_price ? '₹' + Number(p.lowest_price).toLocaleString('en-IN') : '-';
+          var timeStr = p.last_checked_at ? new Date(p.last_checked_at).toLocaleTimeString('en-IN') : 'Checking...';
+
+          html += '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">' +
+            '<div class="flex items-start gap-3.5">' +
+              thumb +
+              '<div class="space-y-1.5">' +
+                '<div class="flex items-center gap-2 flex-wrap">' +
+                  '<a href="' + escHtml(p.url) + '" target="_blank" class="font-semibold text-slate-100 hover:text-blue-400">' + escHtml(p.name) + '</a>' +
+                  statusBadge +
+                  targetTag +
+                '</div>' +
+                '<div class="text-xs text-slate-400 flex flex-wrap gap-x-4 gap-y-1">' +
+                  '<span>📍 PIN: <b class="text-slate-200">' + escHtml(p.pincode) + '</b></span>' +
+                  '<span>💰 Live Price: <b class="text-slate-100">' + priceStr + '</b></span>' +
+                  '<span>🏷️ MRP: <b class="text-slate-400">' + mrpStr + '</b></span>' +
+                  '<span>📉 Lowest: <b class="text-blue-300">' + lowStr + '</b></span>' +
+                  '<span>🕒 ' + timeStr + '</span>' +
+                '</div>' +
+                offersHtml +
+                errLine +
+              '</div>' +
+            '</div>' +
+            '<div class="flex items-center gap-2 shrink-0 self-end md:self-center">' +
+              '<button type="button" onclick="toggleItem(\'' + p.id + '\', ' + (!p.active) + ')" class="px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 cursor-pointer">' + (p.active ? 'Pause' : 'Resume') + '</button>' +
+              '<button type="button" onclick="delItem(\'' + p.id + '\')" class="px-3 py-1.5 text-xs rounded bg-rose-950 text-rose-300 border border-rose-800/40 cursor-pointer">Delete</button>' +
+            '</div>' +
+          '</div>';
+        }
+        box.innerHTML = html;
+      }).catch(function() {
+        showLogin('Network error, dubara try karein');
+      });
+    }
+
+    document.getElementById('addForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      var body = {
+        url: document.getElementById('url').value,
+        pincode: document.getElementById('pincode').value,
+        mode: document.getElementById('mode').value,
+        targetPrice: document.getElementById('targetPrice').value,
+        name: document.getElementById('name').value
+      };
+      api('/api/products', { method: 'POST', body: JSON.stringify(body) }).then(function(res) {
+        if (res.ok) {
+          document.getElementById('url').value = '';
+          document.getElementById('name').value = '';
+          document.getElementById('targetPrice').value = '';
+          loadList();
+          setTimeout(loadList, 4500);
+        } else {
+          res.json().then(function(d) { alert(d.error || 'Error adding product'); });
+        }
+      });
+    });
+
+    function toggleItem(id, active) {
+      api('/api/products/' + id, { method: 'PATCH', body: JSON.stringify({ active: active }) }).then(loadList);
+    }
+
+    function delItem(id) {
+      api('/api/products/' + id, { method: 'DELETE' }).then(loadList);
+    }
+
+    function testTg() {
+      if (!token) { showLogin('Pehle login karein'); return; }
+      var btn = document.getElementById('testBtn');
+      btn.innerText = 'Sending...';
+      api('/api/test-telegram', { method: 'POST' }).then(function(res) {
+        return res.json().then(function(d) {
+          btn.innerText = 'Test Telegram + EarnKaro';
+          alert(res.ok ? '✅ Telegram Deal Card Sent!\nEarnKaro Link: ' + (d.affiliateUrl || '') : '❌ Failed: ' + (d.error || 'Check Bot'));
+        });
+      }).catch(function() {
+        btn.innerText = 'Test Telegram + EarnKaro';
+        alert('❌ Request failed');
+      });
+    }
+
+    if (token) {
+      loadList();
+    } else {
+      showLogin('');
+    }
+    setInterval(function() { if (token) loadList(); }, 8000);
+  </script>
+</body>
+</html>`;
+
+// =========================================================================
+// API ROUTES
+// =========================================================================
+app.get('/', (req, res) => res.type('html').send(HTML));
+app.get('/ping', (req, res) => res.send('OK - Sniper + EarnKaro 24x7 Active'));
+
+app.get('/api/products', checkAuth, async (req, res) => {
+  const { data, error } = await supabase.from('tracked_products').select('*').order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.post('/api/scan-now', checkAuth, async (req, res) => {
+  checkAllProducts();
+  res.json({ started: true });
+});
+
+app.post('/api/products', checkAuth, async (req, res) => {
+  const { url, pincode, mode, targetPrice, name } = req.body;
+  const parsed = cleanFlipkartUrl(url);
+  if (!parsed || !parsed.clean.includes('flipkart.com')) {
+    return res.status(400).json({ error: 'Sahi Flipkart product link dalein' });
+  }
+  if (!/^\d{6}$/.test(String(pincode).trim())) {
+    return res.status(400).json({ error: 'Sahi 6-digit Pincode dalein' });
+  }
+
+  const validMode = mode === 'PRICE' ? 'PRICE' : 'STOCK';
+
+  const { error } = await supabase.from('tracked_products').insert([{
+    name: name?.trim() || 'Flipkart Product',
+    url: parsed.clean,
+    pid: parsed.pid || null,
+    lid: parsed.lid || null,
+    pincode: String(pincode).trim(),
+    mode: validMode,
+    target_price: validMode === 'PRICE' ? Number(targetPrice) : null,
+    status: 'CHECKING',
+    alert_sent: false,
+    active: true
+  }]);
+
+  if (error) return res.status(500).json({ error: error.message });
+  checkAllProducts();
+  res.json({ success: true });
+});
+
+app.patch('/api/products/:id', checkAuth, async (req, res) => {
+  await supabase.from('tracked_products').update({
+    active: req.body.active,
+    alert_sent: false,
+    status: req.body.active ? 'CHECKING' : 'PAUSED'
+  }).eq('id', req.params.id);
+  res.json({ success: true });
+});
+
+app.delete('/api/products/:id', checkAuth, async (req, res) => {
+  await supabase.from('tracked_products').delete().eq('id', req.params.id);
+  res.json({ success: true });
+});
+
+app.post('/api/test-telegram', checkAuth, async (req, res) => {
+  const r = await sendTelegram(
+    { name: 'Test Product', pincode: '462023', url: 'https://www.flipkart.com/apple-iphone-17-lavender-256-gb/p/itm6eb39da622cdd?pid=MOBHFN6YKGBPYJZD' },
+    {
+      title: 'Apple iPhone 17 (Lavender, 256 GB)',
+      price: 82900,
+      mrp: 89900,
+      offers: ['🎟️ Coupon: ₹4000 Instant Bank Discount', 'Special Price: Get extra ₹3000 off']
+    },
+    'EARNKARO + SNIPER BOT TEST!'
+  );
+  res.status(r.ok ? 200 : 500).json(r);
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Flipkart Sniper + EarnKaro Live on Port ${PORT}`);
+  checkAllProducts();
+});
