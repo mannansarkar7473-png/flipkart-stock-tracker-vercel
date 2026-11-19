@@ -7,11 +7,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // =========================================================================
-// PRE-CONFIGURED CREDENTIALS (Supabase + Telegram + ScraperAPI + EarnKaro)
+// PRE-CONFIGURED CREDENTIALS
 // =========================================================================
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://vpqhayqkovxerxertwuv.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZwcWhheXFrb3Z4ZXJ4ZXJ0d3V2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUwNzI1MzYsImV4cCI6MjExMDY0ODUzNn0.3vAnKw1pzzVMt4MWmKIh82Qgghkf_6rL9EtDD0W-ZOc';
-const BOT_TOKEN = process.env.BOT_TOKEN || '9242430164:AAEAAIcATBMTKDgTevoef5TekjniPP-7dSI';
+const BOT_TOKEN = process.env.BOT_TOKEN || '9242430164:AAE9YigL7yAWhKKX_EUZlQBiCWx0NSgUCpE';
 const CHAT_ID = process.env.CHAT_ID || '-1004305890096';
 const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || 'd8c5f8bb94d6c8e304c5ecf9d55bb57f';
 const EARNKARO_TOKEN = process.env.EARNKARO_TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2NmQ5ZGUzZmY4YjQ0MTg3OTVkN2JiYzYiLCJlYXJua2FybyI6IjM3NDQzNTgiLCJpYXQiOjE3OTUxMjA0MTF9.Ck58ZbaopkF5nTtiEnMoGh9yuGfulKkORJR-rZlRmAw';
@@ -63,9 +63,9 @@ function parsePriceNumber(str) {
 }
 
 // =========================================================================
-// EARNKARO AFFILIATE LINK CONVERTER
+// SILENT AUTO AFFILIATE LINK CONVERTER
 // =========================================================================
-async function convertToEarnKaro(originalUrl) {
+async function convertAffiliateLink(originalUrl) {
   if (!EARNKARO_TOKEN) return originalUrl;
   try {
     const res = await axios.post(
@@ -93,20 +93,20 @@ async function convertToEarnKaro(originalUrl) {
       return urlMatch[0];
     }
   } catch (err) {
-    console.error('⚠️ EarnKaro Convert Fallback:', err.response?.data?.message || err.message);
+    console.error('⚠️ Link Convert Fallback:', err.response?.data?.message || err.message);
   }
   return originalUrl;
 }
 
 // =========================================================================
-// RICH TELEGRAM ALERT (EARNKARO LINK + HIDDEN OFFERS + PHOTO)
+// TELEGRAM ALERT SENDER
 // =========================================================================
 async function sendTelegram(product, info, heading) {
   const title = (info.title || product.name || 'Flipkart Product').replace(/[*_`\[\]()]/g, '');
   const price = Number(info.price) || 0;
   const mrp = Number(info.mrp) || 0;
 
-  const affiliateUrl = await convertToEarnKaro(product.url);
+  const finalLink = await convertAffiliateLink(product.url);
 
   const mrpPart = mrp > price && price > 0 ? ` (MRP: ~₹${mrp.toLocaleString('en-IN')}~)` : '';
   const priceText = price > 0 ? `₹${price.toLocaleString('en-IN')}` : 'Check Link';
@@ -121,10 +121,10 @@ async function sendTelegram(product, info, heading) {
     `📍 *Pin Code:* \`${product.pincode}\` (Available ✅)\n` +
     `💰 *Live Price:* ${priceText}${mrpPart}\n` +
     offersBlock +
-    `\n👉 *Order Link:* ${affiliateUrl}`;
+    `\n👉 *Order Link:* ${finalLink}`;
 
   const replyMarkup = {
-    inline_keyboard: [[{ text: '🛒 BUY NOW ON FLIPKART', url: affiliateUrl }]]
+    inline_keyboard: [[{ text: '🛒 BUY NOW ON FLIPKART', url: finalLink }]]
   };
 
   try {
@@ -136,7 +136,7 @@ async function sendTelegram(product, info, heading) {
         parse_mode: 'Markdown',
         reply_markup: replyMarkup
       }, { timeout: 12000 });
-      if (r.data?.ok) return { ok: true, affiliateUrl };
+      if (r.data?.ok) return { ok: true };
     }
   } catch (e) {}
 
@@ -148,7 +148,7 @@ async function sendTelegram(product, info, heading) {
       disable_web_page_preview: false,
       reply_markup: replyMarkup
     }, { timeout: 10000 });
-    return { ok: Boolean(r.data?.ok), affiliateUrl };
+    return { ok: Boolean(r.data?.ok) };
   } catch (err) {
     console.error('❌ Telegram Error:', err.response?.data?.description || err.message);
     return { ok: false, error: err.response?.data?.description || err.message };
@@ -348,7 +348,7 @@ async function fetchProductHybrid(product) {
           mrp: extracted.mrp,
           image: extracted.image,
           offers: extracted.offers,
-          source: 'ScraperAPI India IP'
+          source: 'India IP'
         };
       }
     } catch (err) {
@@ -469,305 +469,325 @@ async function checkAllProducts() {
 setInterval(checkAllProducts, CHECK_INTERVAL_SEC * 1000);
 
 // =========================================================================
-// CLEAN BUG-FREE DASHBOARD HTML (NO NESTED TEMPLATE LITERALS)
+// CLEAN, ROCK-SOLID FRONTEND DASHBOARD (ZERO SYNTAX ERRORS)
 // =========================================================================
-const HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Flipkart Sniper + EarnKaro Auto-Poster</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8">
-  <div class="max-w-5xl mx-auto">
-    <div class="flex flex-wrap items-center justify-between gap-4 mb-6 border-b border-slate-800 pb-4">
-      <div>
-        <div class="flex items-center gap-2.5 flex-wrap">
-          <span class="h-3 w-3 rounded-full bg-emerald-500 animate-pulse"></span>
-          <h1 class="text-xl md:text-2xl font-bold text-blue-400">Flipkart Sniper 24×7</h1>
-          <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">EarnKaro Auto-Link Active</span>
-        </div>
-        <p class="text-xs text-slate-400 mt-1">Continuous Stock & Target Price Monitoring • Hidden Coupons • Auto EarnKaro Telegram Post</p>
-      </div>
-      <div class="flex flex-wrap gap-2">
-        <button type="button" onclick="forceCheck()" id="scanBtn" class="bg-blue-600 hover:bg-blue-500 px-3 py-2 rounded-lg text-xs md:text-sm font-medium cursor-pointer">Scan Now</button>
-        <button type="button" onclick="testTg()" id="testBtn" class="bg-emerald-600 hover:bg-emerald-500 px-3 py-2 rounded-lg text-xs md:text-sm font-medium cursor-pointer">Test Telegram + EarnKaro</button>
-        <button type="button" onclick="logout()" class="bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-lg text-xs md:text-sm cursor-pointer">Logout</button>
-      </div>
-    </div>
-
-    <!-- Login Box -->
-    <div id="loginBox" class="max-w-sm mx-auto bg-slate-900 border border-slate-800 rounded-xl p-6 mt-10">
-      <h2 class="text-lg font-semibold mb-1">Admin Login</h2>
-      <p class="text-xs text-slate-400 mb-3">Default Password: <code class="text-blue-400">admin123</code></p>
-      <input type="password" id="pwd" placeholder="Enter Password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm mb-3 text-white" />
-      <button type="button" onclick="doLogin()" class="w-full bg-blue-600 hover:bg-blue-500 py-2.5 rounded-lg text-sm font-medium cursor-pointer">Login</button>
-      <p id="loginErr" class="text-rose-400 text-xs mt-2"></p>
-    </div>
-
-  <!-- Main App -->
-    <div id="appBox" class="hidden">
-      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6 shadow-lg">
-        <h2 class="text-base font-semibold mb-4 text-slate-200">+ Naya Product Track Karein</h2>
-        <form id="addForm" class="grid grid-cols-1 md:grid-cols-12 gap-3">
-          <div class="md:col-span-6">
-            <label class="text-xs text-slate-400">Flipkart Product Link *</label>
-            <input type="url" id="url" required placeholder="https://www.flipkart.com/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white" />
-          </div>
-          <div class="md:col-span-2">
-            <label class="text-xs text-slate-400">Pin Code *</label>
-            <input type="text" id="pincode" required maxlength="6" pattern="[0-9]{6}" value="462023" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white" />
-          </div>
-          <div class="md:col-span-4">
-            <label class="text-xs text-slate-400">Alert Condition *</label>
-            <select id="mode" onchange="toggleInputs()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white">
-              <option value="STOCK">1. Stock Alert (Stock Aane Par)</option>
-              <option value="PRICE">2. Target Price (₹ Kam Hone Par)</option>
-            </select>
-          </div>
-          <div id="priceDiv" class="md:col-span-4 hidden">
-            <label class="text-xs text-emerald-400">Target Max Price (₹) *</label>
-            <input type="number" id="targetPrice" min="1" placeholder="e.g. 800 (₹800 ya niche aane par)" class="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-sm mt-1 text-white" />
-          </div>
-          <div id="nameDiv" class="md:col-span-12">
-            <label class="text-xs text-slate-400">Product Name (Optional - Auto Detect Hoga)</label>
-            <input type="text" id="name" placeholder="Auto detect from Flipkart" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white" />
-          </div>
-          <div class="md:col-span-12 flex justify-end">
-            <button type="submit" class="bg-blue-600 hover:bg-blue-500 px-6 py-2.5 rounded-lg text-sm font-medium cursor-pointer">Tracking List Mein Jodein</button>
-          </div>
-        </form>
-      </div>
-
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-base font-semibold text-slate-200">Active Tracking List (Auto-Refreshing)</h2>
-        <button type="button" onclick="loadList()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded cursor-pointer">Refresh List</button>
-      </div>
-      <div id="list" class="space-y-3"></div>
-    </div>
-  </div>
-
-  <script>
-    var token = localStorage.getItem('fk_pass') || '';
-
-    function toggleInputs() {
-      var m = document.getElementById('mode').value;
-      var pDiv = document.getElementById('priceDiv');
-      var pIn = document.getElementById('targetPrice');
-      if (m === 'PRICE') {
-        pDiv.classList.remove('hidden');
-        pIn.required = true;
-        document.getElementById('nameDiv').className = 'md:col-span-8';
-      } else {
-        pDiv.classList.add('hidden');
-        pIn.required = false;
-        document.getElementById('nameDiv').className = 'md:col-span-12';
-      }
-    }
-
-    function api(url, opts) {
-      opts = opts || {};
-      opts.headers = Object.assign({}, opts.headers || {}, {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json'
-      });
-      return fetch(url, opts);
-    }
-
-    function showLogin(msg) {
-      document.getElementById('appBox').classList.add('hidden');
-      document.getElementById('loginBox').classList.remove('hidden');
-      if (msg) document.getElementById('loginErr').innerText = msg;
-    }
-
-    function doLogin() {
-      token = document.getElementById('pwd').value.trim();
-      if (!token) {
-        document.getElementById('loginErr').innerText = 'Password enter karein';
-        return;
-      }
-      api('/api/products').then(function(res) {
-        if (res.ok) {
-          localStorage.setItem('fk_pass', token);
-          document.getElementById('loginBox').classList.add('hidden');
-          document.getElementById('appBox').classList.remove('hidden');
-          loadList();
-        } else {
-          document.getElementById('loginErr').innerText = 'Wrong Password! (Default: admin123)';
-        }
-      }).catch(function() {
-        document.getElementById('loginErr').innerText = 'Server se connect nahi ho paya';
-      });
-    }
-
-    function logout() {
-      localStorage.removeItem('fk_pass');
-      token = '';
-      showLogin('');
-    }
-
-    function forceCheck() {
-      if (!token) { showLogin('Pehle login karein'); return; }
-      var btn = document.getElementById('scanBtn');
-      btn.innerText = 'Scanning...';
-      api('/api/scan-now', { method: 'POST' }).finally(function() {
-        setTimeout(function() {
-          btn.innerText = 'Scan Now';
-          loadList();
-        }, 4500);
-      });
-    }
-
-    function escHtml(s) {
-      return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    }
-
-    function loadList() {
-      if (!token) { showLogin(''); return; }
-      api('/api/products').then(function(res) {
-        if (!res.ok) {
-          localStorage.removeItem('fk_pass');
-          token = '';
-          showLogin('Session expired, dubara login karein');
-          return null;
-        }
-        document.getElementById('loginBox').classList.add('hidden');
-        document.getElementById('appBox').classList.remove('hidden');
-        return res.json();
-      }).then(function(items) {
-        if (!items) return;
-        var box = document.getElementById('list');
-        if (!items.length) {
-          box.innerHTML = '<div class="text-center py-8 text-slate-500 text-sm bg-slate-900 border border-slate-800 rounded-xl">Abhi koi product add nahi hai. Upar link aur pincode daal kar add karein.</div>';
-          return;
-        }
-        var html = '';
-        for (var i = 0; i < items.length; i++) {
-          var p = items[i];
-          var statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">' + escHtml(p.status) + '</span>';
-          if (p.status === 'IN_STOCK' || p.status === 'PRICE_HIT') {
-            statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold">' + escHtml(p.status) + ' ✅</span>';
-          } else if (p.status === 'OUT_OF_STOCK') {
-            statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">OUT OF STOCK</span>';
-          } else if (p.status === 'WAITING_PRICE') {
-            statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">In Stock (Waiting ≤ ₹' + escHtml(p.target_price) + ')</span>';
-          }
-
-          var targetTag = '<span class="px-2 py-0.5 text-xs rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">Mode: Stock Alert</span>';
-          if (p.mode === 'PRICE') {
-            targetTag = '<span class="px-2 py-0.5 text-xs rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">Target Price: ≤ ₹' + escHtml(p.target_price) + '</span>';
-          }
-
-          var thumb = p.image_url
-            ? '<img src="' + escHtml(p.image_url) + '" class="w-14 h-14 object-contain bg-white rounded-lg p-1 shrink-0" />'
-            : '<div class="w-14 h-14 bg-slate-800 rounded-lg flex items-center justify-center text-xs text-slate-500 shrink-0">FK</div>';
-
-          var offersHtml = p.offers_text
-            ? '<div class="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-2.5 py-1 mt-1.5">🎁 <b>Offers:</b> ' + escHtml(p.offers_text) + '</div>'
-            : '';
-
-          var errLine = p.error_message
-            ? '<div class="text-xs text-rose-400 mt-1">⚠️ ' + escHtml(p.error_message) + '</div>'
-            : '';
-
-          var priceStr = p.last_price ? '₹' + Number(p.last_price).toLocaleString('en-IN') : '-';
-          var mrpStr = p.last_mrp ? '₹' + Number(p.last_mrp).toLocaleString('en-IN') : '-';
-          var lowStr = p.lowest_price ? '₹' + Number(p.lowest_price).toLocaleString('en-IN') : '-';
-          var timeStr = p.last_checked_at ? new Date(p.last_checked_at).toLocaleTimeString('en-IN') : 'Checking...';
-
-          html += '<div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">' +
-            '<div class="flex items-start gap-3.5">' +
-              thumb +
-              '<div class="space-y-1.5">' +
-                '<div class="flex items-center gap-2 flex-wrap">' +
-                  '<a href="' + escHtml(p.url) + '" target="_blank" class="font-semibold text-slate-100 hover:text-blue-400">' + escHtml(p.name) + '</a>' +
-                  statusBadge +
-                  targetTag +
-                '</div>' +
-                '<div class="text-xs text-slate-400 flex flex-wrap gap-x-4 gap-y-1">' +
-                  '<span>📍 PIN: <b class="text-slate-200">' + escHtml(p.pincode) + '</b></span>' +
-                  '<span>💰 Live Price: <b class="text-slate-100">' + priceStr + '</b></span>' +
-                  '<span>🏷️ MRP: <b class="text-slate-400">' + mrpStr + '</b></span>' +
-                  '<span>📉 Lowest: <b class="text-blue-300">' + lowStr + '</b></span>' +
-                  '<span>🕒 ' + timeStr + '</span>' +
-                '</div>' +
-                offersHtml +
-                errLine +
-              '</div>' +
-            '</div>' +
-            '<div class="flex items-center gap-2 shrink-0 self-end md:self-center">' +
-              '<button type="button" onclick="toggleItem(\'' + p.id + '\', ' + (!p.active) + ')" class="px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 cursor-pointer">' + (p.active ? 'Pause' : 'Resume') + '</button>' +
-              '<button type="button" onclick="delItem(\'' + p.id + '\')" class="px-3 py-1.5 text-xs rounded bg-rose-950 text-rose-300 border border-rose-800/40 cursor-pointer">Delete</button>' +
-            '</div>' +
-          '</div>';
-        }
-        box.innerHTML = html;
-      }).catch(function() {
-        showLogin('Network error, dubara try karein');
-      });
-    }
-
-    document.getElementById('addForm').addEventListener('submit', function(e) {
-      e.preventDefault();
-      var body = {
-        url: document.getElementById('url').value,
-        pincode: document.getElementById('pincode').value,
-        mode: document.getElementById('mode').value,
-        targetPrice: document.getElementById('targetPrice').value,
-        name: document.getElementById('name').value
-      };
-      api('/api/products', { method: 'POST', body: JSON.stringify(body) }).then(function(res) {
-        if (res.ok) {
-          document.getElementById('url').value = '';
-          document.getElementById('name').value = '';
-          document.getElementById('targetPrice').value = '';
-          loadList();
-          setTimeout(loadList, 4500);
-        } else {
-          res.json().then(function(d) { alert(d.error || 'Error adding product'); });
-        }
-      });
-    });
-
-    function toggleItem(id, active) {
-      api('/api/products/' + id, { method: 'PATCH', body: JSON.stringify({ active: active }) }).then(loadList);
-    }
-
-    function delItem(id) {
-      api('/api/products/' + id, { method: 'DELETE' }).then(loadList);
-    }
-
-    function testTg() {
-      if (!token) { showLogin('Pehle login karein'); return; }
-      var btn = document.getElementById('testBtn');
-      btn.innerText = 'Sending...';
-      api('/api/test-telegram', { method: 'POST' }).then(function(res) {
-        return res.json().then(function(d) {
-          btn.innerText = 'Test Telegram + EarnKaro';
-          alert(res.ok ? '✅ Telegram Deal Card Sent!\nEarnKaro Link: ' + (d.affiliateUrl || '') : '❌ Failed: ' + (d.error || 'Check Bot'));
-        });
-      }).catch(function() {
-        btn.innerText = 'Test Telegram + EarnKaro';
-        alert('❌ Request failed');
-      });
-    }
-
-    if (token) {
-      loadList();
-    } else {
-      showLogin('');
-    }
-    setInterval(function() { if (token) loadList(); }, 8000);
-  </script>
-</body>
-</html>`;
+const HTML = [
+  '<!DOCTYPE html>',
+  '<html lang="en">',
+  '<head>',
+  '  <meta charset="UTF-8" />',
+  '  <meta name="viewport" content="width=device-width, initial-scale=1.0" />',
+  '  <title>Flipkart Sniper 24x7 Tracker</title>',
+  '  <script src="https://cdn.tailwindcss.com"></script>',
+  '</head>',
+  '<body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8">',
+  '  <div class="max-w-5xl mx-auto">',
+  '    <div class="flex flex-wrap items-center justify-between gap-4 mb-6 border-b border-slate-800 pb-4">',
+  '      <div>',
+  '        <div class="flex items-center gap-2.5 flex-wrap">',
+  '          <span class="h-3 w-3 rounded-full bg-emerald-500 animate-pulse"></span>',
+  '          <h1 class="text-xl md:text-2xl font-bold text-blue-400">Flipkart Sniper 24×7</h1>',
+  '        </div>',
+  '        <p class="text-xs text-slate-400 mt-1">Continuous Stock & Target Price Monitoring • Hidden Coupons • Instant Telegram Alert</p>',
+  '      </div>',
+  '      <div class="flex flex-wrap gap-2">',
+  '        <button type="button" id="scanBtn" class="bg-blue-600 hover:bg-blue-500 active:scale-95 transition px-3.5 py-2 rounded-lg text-xs md:text-sm font-medium cursor-pointer">Scan Now</button>',
+  '        <button type="button" id="testBtn" class="bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition px-3.5 py-2 rounded-lg text-xs md:text-sm font-medium cursor-pointer">Test Telegram</button>',
+  '        <button type="button" id="logoutBtn" class="bg-slate-800 hover:bg-slate-700 active:scale-95 transition px-3.5 py-2 rounded-lg text-xs md:text-sm cursor-pointer">Logout</button>',
+  '      </div>',
+  '    </div>',
+  '',
+  '    <!-- Login Box -->',
+  '    <div id="loginBox" class="max-w-sm mx-auto bg-slate-900 border border-slate-800 rounded-xl p-6 mt-10 hidden">',
+  '      <h2 class="text-lg font-semibold mb-1">Admin Login</h2>',
+  '      <p class="text-xs text-slate-400 mb-3">Password: <code class="text-blue-400">admin123</code></p>',
+  '      <input type="password" id="pwd" placeholder="Enter Password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm mb-3 text-white focus:outline-none focus:border-blue-500" />',
+  '      <button type="button" id="loginBtn" class="w-full bg-blue-600 hover:bg-blue-500 active:scale-95 transition py-2.5 rounded-lg text-sm font-medium cursor-pointer">Login</button>',
+  '      <p id="loginErr" class="text-rose-400 text-xs mt-2"></p>',
+  '    </div>',
+  '',
+  '    <!-- Main App -->',
+  '    <div id="appBox" class="hidden">',
+  '      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6 shadow-lg">',
+  '        <h2 class="text-base font-semibold mb-4 text-slate-200">+ Naya Product Track Karein</h2>',
+  '        <form id="addForm" class="grid grid-cols-1 md:grid-cols-12 gap-3">',
+  '          <div class="md:col-span-6">',
+  '            <label class="text-xs text-slate-400">Flipkart Product Link *</label>',
+  '            <input type="url" id="url" required placeholder="https://www.flipkart.com/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white focus:outline-none focus:border-blue-500" />',
+  '          </div>',
+  '          <div class="md:col-span-2">',
+  '            <label class="text-xs text-slate-400">Pin Code *</label>',
+  '            <input type="text" id="pincode" required maxlength="6" pattern="[0-9]{6}" value="462023" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white focus:outline-none focus:border-blue-500" />',
+  '          </div>',
+  '          <div class="md:col-span-4">',
+  '            <label class="text-xs text-slate-400">Alert Condition *</label>',
+  '            <select id="mode" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white focus:outline-none focus:border-blue-500">',
+  '              <option value="STOCK">1. Stock Alert (Stock Aane Par)</option>',
+  '              <option value="PRICE">2. Target Price (₹ Kam Hone Par)</option>',
+  '            </select>',
+  '          </div>',
+  '          <div id="priceDiv" class="md:col-span-4 hidden">',
+  '            <label class="text-xs text-emerald-400">Target Max Price (₹) *</label>',
+  '            <input type="number" id="targetPrice" min="1" placeholder="e.g. 800" class="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-sm mt-1 text-white focus:outline-none" />',
+  '          </div>',
+  '          <div id="nameDiv" class="md:col-span-12">',
+  '            <label class="text-xs text-slate-400">Product Name (Optional - Auto Detect Hoga)</label>',
+  '            <input type="text" id="name" placeholder="Auto detect from Flipkart" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white focus:outline-none focus:border-blue-500" />',
+  '          </div>',
+  '          <div class="md:col-span-12 flex justify-end">',
+  '            <button type="submit" id="submitBtn" class="bg-blue-600 hover:bg-blue-500 active:scale-95 transition px-6 py-2.5 rounded-lg text-sm font-medium cursor-pointer">Tracking List Mein Jodein</button>',
+  '          </div>',
+  '        </form>',
+  '      </div>',
+  '',
+  '      <div class="flex items-center justify-between mb-3">',
+  '        <h2 class="text-base font-semibold text-slate-200">Active Tracking List (Auto-Refreshing)</h2>',
+  '        <button type="button" id="refreshBtn" class="text-xs bg-slate-800 hover:bg-slate-700 active:scale-95 transition px-3 py-1.5 rounded cursor-pointer">Refresh List</button>',
+  '      </div>',
+  '      <div id="list" class="space-y-3"></div>',
+  '    </div>',
+  '  </div>',
+  '',
+  '  <script>',
+  '    (function() {',
+  '      var token = localStorage.getItem("fk_pass") || "";',
+  '',
+  '      function byId(id) { return document.getElementById(id); }',
+  '',
+  '      function showLogin(msg) {',
+  '        byId("appBox").classList.add("hidden");',
+  '        byId("loginBox").classList.remove("hidden");',
+  '        byId("loginErr").textContent = msg || "";',
+  '      }',
+  '',
+  '      function showApp() {',
+  '        byId("loginBox").classList.add("hidden");',
+  '        byId("appBox").classList.remove("hidden");',
+  '      }',
+  '',
+  '      function api(url, opts) {',
+  '        opts = opts || {};',
+  '        opts.headers = Object.assign({}, opts.headers || {}, {',
+  '          "Authorization": "Bearer " + token,',
+  '          "Content-Type": "application/json"',
+  '        });',
+  '        return fetch(url, opts);',
+  '      }',
+  '',
+  '      function escHtml(s) {',
+  '        return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");',
+  '      }',
+  '',
+  '      function toggleInputs() {',
+  '        var m = byId("mode").value;',
+  '        var pDiv = byId("priceDiv");',
+  '        var pIn = byId("targetPrice");',
+  '        if (m === "PRICE") {',
+  '          pDiv.classList.remove("hidden");',
+  '          pIn.required = true;',
+  '          byId("nameDiv").className = "md:col-span-8";',
+  '        } else {',
+  '          pDiv.classList.add("hidden");',
+  '          pIn.required = false;',
+  '          byId("nameDiv").className = "md:col-span-12";',
+  '        }',
+  '      }',
+  '',
+  '      function doLogin() {',
+  '        var val = byId("pwd").value.trim();',
+  '        if (!val) { byId("loginErr").textContent = "Password enter karein"; return; }',
+  '        token = val;',
+  '        byId("loginBtn").textContent = "Logging in...";',
+  '        api("/api/products").then(function(res) {',
+  '          byId("loginBtn").textContent = "Login";',
+  '          if (res.ok) {',
+  '            localStorage.setItem("fk_pass", token);',
+  '            showApp();',
+  '            loadList();',
+  '          } else {',
+  '            token = "";',
+  '            byId("loginErr").textContent = "Wrong Password! (Default: admin123)";',
+  '          }',
+  '        }).catch(function() {',
+  '          byId("loginBtn").textContent = "Login";',
+  '          byId("loginErr").textContent = "Network error, dubara try karein";',
+  '        });',
+  '      }',
+  '',
+  '      function logout() {',
+  '        localStorage.removeItem("fk_pass");',
+  '        token = "";',
+  '        byId("pwd").value = "";',
+  '        showLogin("");',
+  '      }',
+  '',
+  '      function forceCheck() {',
+  '        if (!token) { showLogin("Pehle login karein"); return; }',
+  '        var btn = byId("scanBtn");',
+  '        btn.textContent = "Scanning...";',
+  '        api("/api/scan-now", { method: "POST" }).finally(function() {',
+  '          setTimeout(function() {',
+  '            btn.textContent = "Scan Now";',
+  '            loadList();',
+  '          }, 4000);',
+  '        });',
+  '      }',
+  '',
+  '      function testTg() {',
+  '        if (!token) { showLogin("Pehle login karein"); return; }',
+  '        var btn = byId("testBtn");',
+  '        btn.textContent = "Sending...";',
+  '        api("/api/test-telegram", { method: "POST" }).then(function(res) {',
+  '          btn.textContent = "Test Telegram";',
+  '          alert(res.ok ? "✅ Telegram Alert Sent!" : "❌ Failed - Check Bot Permissions");',
+  '        }).catch(function() {',
+  '          btn.textContent = "Test Telegram";',
+  '          alert("❌ Network Error");',
+  '        });',
+  '      }',
+  '',
+  '      function loadList() {',
+  '        if (!token) { showLogin(""); return; }',
+  '        api("/api/products").then(function(res) {',
+  '          if (!res.ok) {',
+  '            localStorage.removeItem("fk_pass");',
+  '            token = "";',
+  '            showLogin("Session expired, dubara login karein");',
+  '            return null;',
+  '          }',
+  '          showApp();',
+  '          return res.json();',
+  '        }).then(function(items) {',
+  '          if (!items) return;',
+  '          var box = byId("list");',
+  '          if (!items.length) {',
+  '            box.innerHTML = "<div class=\\"text-center py-8 text-slate-500 text-sm bg-slate-900 border border-slate-800 rounded-xl\\">Abhi koi product add nahi hai. Upar link aur pincode daal kar add karein.</div>";',
+  '            return;',
+  '          }',
+  '          var out = "";',
+  '          for (var i = 0; i < items.length; i++) {',
+  '            var p = items[i];',
+  '            var statusBadge = "<span class=\\"px-2.5 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30\\">" + escHtml(p.status) + "</span>";',
+  '            if (p.status === "IN_STOCK" || p.status === "PRICE_HIT") {',
+  '              statusBadge = "<span class=\\"px-2.5 py-0.5 text-xs rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold\\">" + escHtml(p.status) + " ✅</span>";',
+  '            } else if (p.status === "OUT_OF_STOCK") {',
+  '              statusBadge = "<span class=\\"px-2.5 py-0.5 text-xs rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30\\">OUT OF STOCK</span>";',
+  '            } else if (p.status === "WAITING_PRICE") {',
+  '              statusBadge = "<span class=\\"px-2.5 py-0.5 text-xs rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30\\">In Stock (Waiting ≤ ₹" + escHtml(p.target_price) + ")</span>";',
+  '            }',
+  '',
+  '            var targetTag = "<span class=\\"px-2 py-0.5 text-xs rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20\\">Mode: Stock Alert</span>";',
+  '            if (p.mode === "PRICE") {',
+  '              targetTag = "<span class=\\"px-2 py-0.5 text-xs rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20\\">Target Price: ≤ ₹" + escHtml(p.target_price) + "</span>";',
+  '            }',
+  '',
+  '            var thumb = p.image_url',
+  '              ? "<img src=\\"" + escHtml(p.image_url) + "\\" class=\\"w-14 h-14 object-contain bg-white rounded-lg p-1 shrink-0\\" />"',
+  '              : "<div class=\\"w-14 h-14 bg-slate-800 rounded-lg flex items-center justify-center text-xs text-slate-500 shrink-0\\">FK</div>";',
+  '',
+  '            var offersHtml = p.offers_text',
+  '              ? "<div class=\\"text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-2.5 py-1 mt-1.5\\">🎁 <b>Offers:</b> " + escHtml(p.offers_text) + "</div>"',
+  '              : "";',
+  '',
+  '            var errLine = p.error_message',
+  '              ? "<div class=\\"text-xs text-rose-400 mt-1\\">⚠️ " + escHtml(p.error_message) + "</div>"',
+  '              : "";',
+  '',
+  '            var priceStr = p.last_price ? "₹" + Number(p.last_price).toLocaleString("en-IN") : "-";',
+  '            var mrpStr = p.last_mrp ? "₹" + Number(p.last_mrp).toLocaleString("en-IN") : "-";',
+  '            var lowStr = p.lowest_price ? "₹" + Number(p.lowest_price).toLocaleString("en-IN") : "-";',
+  '            var timeStr = p.last_checked_at ? new Date(p.last_checked_at).toLocaleTimeString("en-IN") : "Checking...";',
+  '',
+  '            out += "<div class=\\"bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4\\">" +',
+  '              "<div class=\\"flex items-start gap-3.5\\">" + thumb +',
+  '                "<div class=\\"space-y-1.5\\">" +',
+  '                  "<div class=\\"flex items-center gap-2 flex-wrap\\">" +',
+  '                    "<a href=\\"" + escHtml(p.url) + "\\" target=\\"_blank\\" class=\\"font-semibold text-slate-100 hover:text-blue-400\\">" + escHtml(p.name) + "</a>" +',
+  '                    statusBadge + targetTag +',
+  '                  "</div>" +',
+  '                  "<div class=\\"text-xs text-slate-400 flex flex-wrap gap-x-4 gap-y-1\\">" +',
+  '                    "<span>📍 PIN: <b class=\\"text-slate-200\\">" + escHtml(p.pincode) + "</b></span>" +',
+  '                    "<span>💰 Live Price: <b class=\\"text-slate-100\\">" + priceStr + "</b></span>" +',
+  '                    "<span>🏷️ MRP: <b class=\\"text-slate-400\\">" + mrpStr + "</b></span>" +',
+  '                    "<span>📉 Lowest: <b class=\\"text-blue-300\\">" + lowStr + "</b></span>" +',
+  '                    "<span>🕒 " + timeStr + "</span>" +',
+  '                  "</div>" + offersHtml + errLine +',
+  '                "</div>" +',
+  '              "</div>" +',
+  '              "<div class=\\"flex items-center gap-2 shrink-0 self-end md:self-center\\">" +',
+  '                "<button type=\\"button\\" data-action=\\"toggle\\" data-id=\\"" + escHtml(p.id) + "\\" data-active=\\"" + (!p.active) + "\\" class=\\"action-btn px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 cursor-pointer\\">" + (p.active ? "Pause" : "Resume") + "</button>" +',
+  '                "<button type=\\"button\\" data-action=\\"delete\\" data-id=\\"" + escHtml(p.id) + "\\" class=\\"action-btn px-3 py-1.5 text-xs rounded bg-rose-950 text-rose-300 border border-rose-800/40 cursor-pointer\\">Delete</button>" +',
+  '              "</div>" +',
+  '            "</div>";',
+  '          }',
+  '          box.innerHTML = out;',
+  '        }).catch(function() {',
+  '          showLogin("Network error, dubara try karein");',
+  '        });',
+  '      }',
+  '',
+  '      byId("loginBtn").addEventListener("click", doLogin);',
+  '      byId("pwd").addEventListener("keydown", function(e) { if (e.key === "Enter") doLogin(); });',
+  '      byId("logoutBtn").addEventListener("click", logout);',
+  '      byId("scanBtn").addEventListener("click", forceCheck);',
+  '      byId("testBtn").addEventListener("click", testTg);',
+  '      byId("refreshBtn").addEventListener("click", loadList);',
+  '      byId("mode").addEventListener("change", toggleInputs);',
+  '',
+  '      byId("list").addEventListener("click", function(e) {',
+  '        var btn = e.target.closest(".action-btn");',
+  '        if (!btn) return;',
+  '        var id = btn.getAttribute("data-id");',
+  '        var action = btn.getAttribute("data-action");',
+  '        if (action === "toggle") {',
+  '          var active = btn.getAttribute("data-active") === "true";',
+  '          api("/api/products/" + id, { method: "PATCH", body: JSON.stringify({ active: active }) }).then(loadList);',
+  '        } else if (action === "delete") {',
+  '          api("/api/products/" + id, { method: "DELETE" }).then(loadList);',
+  '        }',
+  '      });',
+  '',
+  '      byId("addForm").addEventListener("submit", function(e) {',
+  '        e.preventDefault();',
+  '        var sBtn = byId("submitBtn");',
+  '        sBtn.textContent = "Adding...";',
+  '        var body = {',
+  '          url: byId("url").value,',
+  '          pincode: byId("pincode").value,',
+  '          mode: byId("mode").value,',
+  '          targetPrice: byId("targetPrice").value,',
+  '          name: byId("name").value',
+  '        };',
+  '        api("/api/products", { method: "POST", body: JSON.stringify(body) }).then(function(res) {',
+  '          sBtn.textContent = "Tracking List Mein Jodein";',
+  '          if (res.ok) {',
+  '            byId("url").value = "";',
+  '            byId("name").value = "";',
+  '            byId("targetPrice").value = "";',
+  '            loadList();',
+  '            setTimeout(loadList, 4000);',
+  '          } else {',
+  '            res.json().then(function(d) { alert(d.error || "Error adding product"); });',
+  '          }',
+  '        }).catch(function() {',
+  '          sBtn.textContent = "Tracking List Mein Jodein";',
+  '          alert("Network error");',
+  '        });',
+  '      });',
+  '',
+  '      if (token) { loadList(); } else { showLogin(""); }',
+  '      setInterval(function() { if (token) loadList(); }, 8000);',
+  '    })();',
+  '  </script>',
+  '</body>',
+  '</html>'
+].join('\n');
 
 // =========================================================================
 // API ROUTES
 // =========================================================================
 app.get('/', (req, res) => res.type('html').send(HTML));
-app.get('/ping', (req, res) => res.send('OK - Sniper + EarnKaro 24x7 Active'));
+app.get('/ping', (req, res) => res.send('OK - Sniper 24x7 Active'));
 
 app.get('/api/products', checkAuth, async (req, res) => {
   const { data, error } = await supabase.from('tracked_products').select('*').order('created_at', { ascending: false });
@@ -833,12 +853,12 @@ app.post('/api/test-telegram', checkAuth, async (req, res) => {
       mrp: 89900,
       offers: ['🎟️ Coupon: ₹4000 Instant Bank Discount', 'Special Price: Get extra ₹3000 off']
     },
-    'EARNKARO + SNIPER BOT TEST!'
+    'SNIPER BOT TEST ALERT!'
   );
   res.status(r.ok ? 200 : 500).json(r);
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Flipkart Sniper + EarnKaro Live on Port ${PORT}`);
+  console.log(`🚀 Flipkart Sniper Live on Port ${PORT}`);
   checkAllProducts();
 });
