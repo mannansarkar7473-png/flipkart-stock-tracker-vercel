@@ -7,7 +7,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // =========================================================================
-// PRE-CONFIGURED CREDENTIALS
+// PRE-CONFIGURED CREDENTIALS (Supabase + Telegram + ScraperAPI + EarnKaro)
 // =========================================================================
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://vpqhayqkovxerxertwuv.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZwcWhheXFrb3Z4ZXJ4ZXJ0d3V2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUwNzI1MzYsImV4cCI6MjExMDY0ODUzNn0.3vAnKw1pzzVMt4MWmKIh82Qgghkf_6rL9EtDD0W-ZOc';
@@ -31,28 +31,12 @@ function checkAuth(req, res, next) {
 }
 
 const USER_AGENTS = [
-  'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36'
 ];
 
 function getRandomUA() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-}
-
-function cleanFlipkartUrl(rawUrl) {
-  try {
-    const u = new URL(rawUrl.trim());
-    const pid = u.searchParams.get('pid');
-    const lid = u.searchParams.get('lid');
-    let clean = `${u.origin}${u.pathname}`;
-    const q = [];
-    if (pid) q.push(`pid=${pid}`);
-    if (lid) q.push(`lid=${lid}`);
-    if (q.length) clean += `?${q.join('&')}`;
-    return { clean, pid, lid };
-  } catch {
-    return null;
-  }
 }
 
 function parsePriceNumber(str) {
@@ -63,7 +47,61 @@ function parsePriceNumber(str) {
 }
 
 // =========================================================================
-// SILENT AUTO AFFILIATE LINK CONVERTER
+// MULTI-STORE URL CLEANER & IDENTIFIER (Amazon, Flipkart, Myntra, Nykaa)
+// =========================================================================
+function detectAndCleanUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl.trim());
+    const host = u.hostname.toLowerCase();
+
+    if (host.includes('flipkart.com')) {
+      const pid = u.searchParams.get('pid');
+      const lid = u.searchParams.get('lid');
+      let clean = `${u.origin}${u.pathname}`;
+      const q = [];
+      if (pid) q.push(`pid=${pid}`);
+      if (lid) q.push(`lid=${lid}`);
+      if (q.length) clean += `?${q.join('&')}`;
+      return { store: 'FLIPKART', clean, pid, lid };
+    }
+
+    if (host.includes('amazon.in') || host.includes('amazon.com') || host.includes('amzn.')) {
+      const asinMatch = u.pathname.match(/\/(?:dp|gp\/product|product)\/([A-Z0-9]{10})/i);
+      const asin = asinMatch ? asinMatch[1].toUpperCase() : null;
+      const clean = asin && host.includes('amazon.')
+        ? `${u.origin}/dp/${asin}`
+        : `${u.origin}${u.pathname}`;
+      return { store: 'AMAZON', clean, pid: asin, lid: null };
+    }
+
+    if (host.includes('myntra.com')) {
+      const clean = `${u.origin}${u.pathname}`;
+      const idMatch = u.pathname.match(/\/(\d+)\/buy/i);
+      return { store: 'MYNTRA', clean, pid: idMatch ? idMatch[1] : null, lid: null };
+    }
+
+    if (host.includes('nykaa.com')) {
+      const clean = `${u.origin}${u.pathname}`;
+      const idMatch = u.pathname.match(/\/p\/(\d+)/i);
+      return { store: 'NYKAA', clean, pid: idMatch ? idMatch[1] : null, lid: null };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getStoreFromUrl(url) {
+  const s = String(url || '').toLowerCase();
+  if (s.includes('amazon.') || s.includes('amzn.')) return 'AMAZON';
+  if (s.includes('myntra.')) return 'MYNTRA';
+  if (s.includes('nykaa.')) return 'NYKAA';
+  return 'FLIPKART';
+}
+
+// =========================================================================
+// SILENT AUTO AFFILIATE LINK CONVERTER (ALL 4 STORES VIA EARNKARO)
 // =========================================================================
 async function convertAffiliateLink(originalUrl) {
   if (!EARNKARO_TOKEN) return originalUrl;
@@ -89,20 +127,28 @@ async function convertAffiliateLink(originalUrl) {
     }
     const rawStr = JSON.stringify(data || {});
     const urlMatch = rawStr.match(/https?:\/\/[^\s"\\]+/);
-    if (urlMatch && urlMatch[0] && !urlMatch[0].includes('flipkart.com')) {
+    if (
+      urlMatch &&
+      urlMatch[0] &&
+      !urlMatch[0].includes('flipkart.com') &&
+      !urlMatch[0].includes('amazon.in') &&
+      !urlMatch[0].includes('myntra.com') &&
+      !urlMatch[0].includes('nykaa.com')
+    ) {
       return urlMatch[0];
     }
   } catch (err) {
-    console.error('⚠️ Link Convert Fallback:', err.response?.data?.message || err.message);
+    console.error('⚠️ Affiliate Link Fallback:', err.response?.data?.message || err.message);
   }
   return originalUrl;
 }
 
 // =========================================================================
-// TELEGRAM ALERT SENDER
+// TELEGRAM ALERT SENDER (STORE BADGE + PHOTO + HIDDEN OFFERS + AFFILIATE LINK)
 // =========================================================================
 async function sendTelegram(product, info, heading) {
-  const title = (info.title || product.name || 'Flipkart Product').replace(/[*_`\[\]()]/g, '');
+  const store = getStoreFromUrl(product.url);
+  const title = (info.title || product.name || `${store} Product`).replace(/[*_`\[\]()]/g, '');
   const price = Number(info.price) || 0;
   const mrp = Number(info.mrp) || 0;
 
@@ -117,6 +163,7 @@ async function sendTelegram(product, info, heading) {
 
   const caption =
     `🚨 *${heading}* 🚨\n\n` +
+    `🏪 *Store:* ${store}\n` +
     `📦 *Product:* ${title}\n` +
     `📍 *Pin Code:* \`${product.pincode}\` (Available ✅)\n` +
     `💰 *Live Price:* ${priceText}${mrpPart}\n` +
@@ -124,7 +171,7 @@ async function sendTelegram(product, info, heading) {
     `\n👉 *Order Link:* ${finalLink}`;
 
   const replyMarkup = {
-    inline_keyboard: [[{ text: '🛒 BUY NOW ON FLIPKART', url: finalLink }]]
+    inline_keyboard: [[{ text: `🛒 BUY NOW ON ${store}`, url: finalLink }]]
   };
 
   try {
@@ -156,16 +203,14 @@ async function sendTelegram(product, info, heading) {
 }
 
 // =========================================================================
-// HTML DOM + HIDDEN OFFERS & COUPONS + LD+JSON EXTRACTOR
+// STORE-SPECIFIC EXTRACTORS (FLIPKART, AMAZON, MYNTRA, NYKAA)
 // =========================================================================
-function extractFromHtml(html, targetPid) {
-  const $ = cheerio.load(html);
+function extractSchemaBase($) {
   let title = null;
   let price = null;
   let mrp = null;
   let image = null;
   let inStock = null;
-  const offersList = [];
 
   $('script[type="application/ld+json"]').each((_, el) => {
     try {
@@ -177,11 +222,13 @@ function extractFromHtml(html, targetPid) {
         if (item['@type'] === 'Product') {
           if (item.name && !title) title = item.name.trim();
           if (item.image && !image) {
-            image = Array.isArray(item.image) ? item.image[0] : item.image;
+            const imgObj = Array.isArray(item.image) ? item.image[0] : item.image;
+            image = typeof imgObj === 'string' ? imgObj : imgObj?.url || null;
           }
           const offers = Array.isArray(item.offers) ? item.offers[0] : item.offers;
           if (offers) {
             if (offers.price && !price) price = parsePriceNumber(offers.price);
+            if (offers.highPrice && !mrp) mrp = parsePriceNumber(offers.highPrice);
             if (offers.availability) {
               const av = String(offers.availability);
               if (av.includes('InStock')) inStock = true;
@@ -193,86 +240,58 @@ function extractFromHtml(html, targetPid) {
     } catch (e) {}
   });
 
-  const titleSelectors = ['span.VU-ZEz', 'span.B_NuCI', 'h1._6EBuvT span', 'h1'];
-  for (const sel of titleSelectors) {
-    const t = $(sel).first().text().trim();
-    if (t && t.length > 3 && !title) {
-      title = t.replace(/\s+/g, ' ');
-      break;
-    }
-  }
-
-  const priceSelectors = ['div.Nx9bqj.CxhGGd', 'div.Nx9bqj', 'div._30jeq3._16Jk6d', 'div._30jeq3'];
-  for (const sel of priceSelectors) {
-    const p = parsePriceNumber($(sel).first().text());
-    if (p && !price) {
-      price = p;
-      break;
-    }
-  }
-
-  const mrpSelectors = ['div.yRaY8j.A6\\+E6v', 'div.yRaY8j', 'div._3I9_wc._2p6lqe', 'div._3I9_wc'];
-  for (const sel of mrpSelectors) {
-    const m = parsePriceNumber($(sel).first().text());
-    if (m && (!price || m >= price) && !mrp) {
-      mrp = m;
-      break;
-    }
-  }
-
   if (!image) {
-    const imgSrc =
-      $('img.DByuf4.IZexXJ').attr('src') ||
-      $('img._396cs4._2amPTt._3qGmMb').attr('src') ||
-      $('meta[property="og:image"]').attr('content');
+    const ogImg = $('meta[property="og:image"]').attr('content');
+    if (ogImg && ogImg.startsWith('http')) image = ogImg;
+  }
+
+  return { title, price, mrp, image, inStock };
+}
+
+// 1. FLIPKART PARSER
+function parseFlipkartHtml(html, targetPid) {
+  const $ = cheerio.load(html);
+  const base = extractSchemaBase($);
+  let { title, price, mrp, image, inStock } = base;
+  const offersList = [];
+
+  for (const sel of ['span.VU-ZEz', 'span.B_NuCI', 'h1._6EBuvT span', 'h1']) {
+    const t = $(sel).first().text().trim();
+    if (t && t.length > 3 && !title) { title = t.replace(/\s+/g, ' '); break; }
+  }
+  for (const sel of ['div.Nx9bqj.CxhGGd', 'div.Nx9bqj', 'div._30jeq3._16Jk6d', 'div._30jeq3']) {
+    const p = parsePriceNumber($(sel).first().text());
+    if (p && !price) { price = p; break; }
+  }
+  for (const sel of ['div.yRaY8j.A6\\+E6v', 'div.yRaY8j', 'div._3I9_wc._2p6lqe', 'div._3I9_wc']) {
+    const m = parsePriceNumber($(sel).first().text());
+    if (m && (!price || m >= price) && !mrp) { mrp = m; break; }
+  }
+  if (!image) {
+    const imgSrc = $('img.DByuf4.IZexXJ').attr('src') || $('img._396cs4._2amPTt._3qGmMb').attr('src');
     if (imgSrc && imgSrc.startsWith('http')) image = imgSrc;
   }
 
-  const offerSelectors = ['li.kF1m4z', 'li._16eBzU', 'div.cPHDOP span', 'div._3TT44I', 'span.ynXjOy'];
-  for (const sel of offerSelectors) {
+  for (const sel of ['li.kF1m4z', 'li._16eBzU', 'div.cPHDOP span', 'div._3TT44I', 'span.ynXjOy']) {
     $(sel).each((_, el) => {
-      let txt = $(el).text().replace(/\s+/g, ' ').trim();
-      txt = txt.replace(/T&C$/i, '').replace(/View Plans$/i, '').trim();
-      if (
-        txt.length > 10 &&
-        txt.length < 160 &&
-        (txt.toLowerCase().includes('off') ||
-          txt.toLowerCase().includes('coupon') ||
-          txt.toLowerCase().includes('cashback') ||
-          txt.toLowerCase().includes('special price') ||
-          txt.toLowerCase().includes('bank'))
-      ) {
-        if (!offersList.includes(txt) && offersList.length < 4) {
-          offersList.push(txt);
-        }
+      let txt = $(el).text().replace(/\s+/g, ' ').trim().replace(/T&C$/i, '').replace(/View Plans$/i, '').trim();
+      if (txt.length > 10 && txt.length < 160 && /(off|coupon|cashback|special price|bank)/i.test(txt)) {
+        if (!offersList.includes(txt) && offersList.length < 4) offersList.push(txt);
       }
     });
   }
-
   const couponMatch = $('body').text().match(/(₹\s*\d+\s*off\s*(?:applied|with coupon|extra)[^.\n]{0,45})/i);
   if (couponMatch && couponMatch[1]) {
     const cText = couponMatch[1].replace(/\s+/g, ' ').trim();
-    if (!offersList.some(o => o.includes(cText))) {
-      offersList.unshift(`🎟️ Coupon: ${cText}`);
-    }
+    if (!offersList.some(o => o.includes(cText))) offersList.unshift(`🎟️ Coupon: ${cText}`);
   }
 
   const bodyText = $('body').text();
-  const hasBuyBtn =
-    $('button:contains("Buy Now")').length > 0 ||
-    $('button:contains("BUY NOW")').length > 0 ||
-    $('button:contains("Add to cart")').length > 0 ||
-    $('button:contains("ADD TO CART")').length > 0 ||
-    $('button:contains("Go to cart")').length > 0;
-
-  const hasOosText =
-    bodyText.includes('Currently out of stock') ||
-    bodyText.includes('Sold Out') ||
-    $('button:contains("Notify Me")').length > 0 ||
-    $('button:contains("NOTIFY ME")').length > 0;
-
-  if (hasOosText) inStock = false;
-  else if (hasBuyBtn) inStock = true;
+  if (bodyText.includes('Currently out of stock') || bodyText.includes('Sold Out') || $('button:contains("Notify Me")').length > 0) {
+    inStock = false;
+  } else if ($('button:contains("Buy Now")').length > 0 || $('button:contains("Add to cart")').length > 0 || $('button:contains("Go to cart")').length > 0) {
+    inStock = true;
+  }
 
   const stateMatch = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});\s*<\/script>/);
   if (stateMatch && stateMatch[1]) {
@@ -298,13 +317,174 @@ function extractFromHtml(html, targetPid) {
   return { title, price, mrp, image, inStock, offers: offersList.slice(0, 4) };
 }
 
-// =========================================================================
-// MASTER FETCHER (Direct Try -> ScraperAPI India Residential IP)
-// =========================================================================
-async function fetchProductHybrid(product) {
-  const u = new URL(product.url);
-  const pid = product.pid || u.searchParams.get('pid');
+// 2. AMAZON.IN PARSER
+function parseAmazonHtml(html) {
+  const $ = cheerio.load(html);
+  const base = extractSchemaBase($);
+  let { title, price, mrp, image, inStock } = base;
+  const offersList = [];
 
+  const t = $('#productTitle').text().trim();
+  if (t) title = t.replace(/\s+/g, ' ');
+
+  const priceSelectors = [
+    '.priceToPay .a-price-whole',
+    '#corePriceDisplay_desktop_feature_div .a-price-whole',
+    '#corePrice_feature_div .a-price-whole',
+    '#priceblock_ourprice',
+    '#priceblock_dealprice',
+    '.a-price .a-offscreen'
+  ];
+  for (const sel of priceSelectors) {
+    const p = parsePriceNumber($(sel).first().text());
+    if (p) { price = p; break; }
+  }
+
+  const mrpSelectors = [
+    '.basisPrice .a-offscreen',
+    '#corePriceDisplay_desktop_feature_div .a-text-price .a-offscreen',
+    '.a-text-price .a-offscreen'
+  ];
+  for (const sel of mrpSelectors) {
+    const m = parsePriceNumber($(sel).first().text());
+    if (m && (!price || m >= price)) { mrp = m; break; }
+  }
+
+  const mainImg = $('#landingImage').attr('data-old-hires') || $('#landingImage').attr('src') || $('#imgBlkFront').attr('src');
+  if (mainImg && mainImg.startsWith('http')) image = mainImg;
+
+  // Amazon Coupon & Bank Offers
+  const couponLabel = $('#couponBadgeRegularVpc, label[id*="couponText"], .promoPriceBlockMessage').first().text().replace(/\s+/g, ' ').trim();
+  if (couponLabel && couponLabel.length > 4) {
+    offersList.push(`🎟️ Coupon: ${couponLabel.slice(0, 110)}`);
+  }
+  $('#itembox-InstantBankDiscount .a-truncate-full, .vsx-offers-desktop-lv__item .a-truncate-full').each((_, el) => {
+    const txt = $(el).text().replace(/\s+/g, ' ').trim();
+    if (txt.length > 10 && txt.length < 150 && !offersList.includes(txt) && offersList.length < 4) {
+      offersList.push(txt);
+    }
+  });
+
+  // Amazon Stock Check
+  const availText = $('#availability').text().toLowerCase();
+  const hasBuyBtn = $('#add-to-cart-button').length > 0 || $('#buy-now-button').length > 0;
+  if (availText.includes('currently unavailable') || availText.includes('out of stock')) {
+    inStock = false;
+  } else if (availText.includes('in stock') || hasBuyBtn) {
+    inStock = true;
+  }
+
+  return { title, price, mrp, image, inStock, offers: offersList.slice(0, 4) };
+}
+
+// 3. MYNTRA PARSER
+function parseMyntraHtml(html) {
+  const $ = cheerio.load(html);
+  const base = extractSchemaBase($);
+  let { title, price, mrp, image, inStock } = base;
+  const offersList = [];
+
+  const myxMatch = html.match(/window\.__myx\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/);
+  if (myxMatch && myxMatch[1]) {
+    try {
+      const myx = JSON.parse(myxMatch[1]);
+      const pdp = myx?.pdpData;
+      if (pdp) {
+        if (pdp.name) title = pdp.name;
+        if (pdp.price?.discounted) price = Number(pdp.price.discounted);
+        else if (pdp.price?.mrp) price = Number(pdp.price.mrp);
+        if (pdp.price?.mrp) mrp = Number(pdp.price.mrp);
+
+        const imgUrl = pdp.media?.albums?.[0]?.images?.[0]?.secureSrc || pdp.media?.albums?.[0]?.images?.[0]?.src;
+        if (imgUrl) image = imgUrl.replace('($height)', '720').replace('($width)', '540').replace('($qualityPercentage)', '90');
+
+        if (Array.isArray(pdp.sizes)) {
+          const anyAvailable = pdp.sizes.some(s => s.available === true);
+          inStock = anyAvailable;
+        }
+        if (Array.isArray(pdp.offers)) {
+          for (const off of pdp.offers.slice(0, 3)) {
+            if (off.title || off.description) offersList.push(`${off.title || ''} ${off.description || ''}`.trim().slice(0, 130));
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (!title) {
+    const brand = $('.pdp-title').first().text().trim();
+    const sub = $('.pdp-name').first().text().trim();
+    if (brand || sub) title = `${brand} ${sub}`.trim();
+  }
+  if (!price) price = parsePriceNumber($('.pdp-price strong').first().text());
+  if (!mrp) mrp = parsePriceNumber($('.pdp-mrp s').first().text());
+
+  if (inStock === null) {
+    const body = $('body').text();
+    if (body.includes('OUT OF STOCK') || body.includes('Sold Out')) inStock = false;
+    else if (body.includes('ADD TO BAG')) inStock = true;
+  }
+
+  return { title, price, mrp, image, inStock, offers: offersList.slice(0, 4) };
+}
+
+// 4. NYKAA PARSER
+function parseNykaaHtml(html) {
+  const $ = cheerio.load(html);
+  const base = extractSchemaBase($);
+  let { title, price, mrp, image, inStock } = base;
+  const offersList = [];
+
+  const stateMatch = html.match(/window\.__PRELOADED_STATE__\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/);
+  if (stateMatch && stateMatch[1]) {
+    try {
+      const st = JSON.parse(stateMatch[1]);
+      const prod = st?.productReducer?.product || st?.productPage?.product;
+      if (prod) {
+        if (prod.name) title = prod.name;
+        if (prod.finalPrice) price = Number(prod.finalPrice);
+        else if (prod.price) price = Number(prod.price);
+        if (prod.mrp) mrp = Number(prod.mrp);
+        if (prod.imageUrl) image = prod.imageUrl;
+        if (typeof prod.inStock === 'boolean') inStock = prod.inStock;
+        if (Array.isArray(prod.offers)) {
+          for (const off of prod.offers.slice(0, 3)) {
+            const txt = off.title || off.description || off.offerText;
+            if (txt) offersList.push(String(txt).trim().slice(0, 130));
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (!title) {
+    const h1 = $('h1').first().text().trim();
+    if (h1) title = h1.replace(/\s+/g, ' ');
+  }
+  if (inStock === null) {
+    const body = $('body').text();
+    if (body.includes('Out Of Stock') || body.includes('Sold Out')) inStock = false;
+    else if (body.includes('Add to Bag')) inStock = true;
+  }
+
+  return { title, price, mrp, image, inStock, offers: offersList.slice(0, 4) };
+}
+
+function parseByStore(store, html, pid) {
+  if (store === 'AMAZON') return parseAmazonHtml(html);
+  if (store === 'MYNTRA') return parseMyntraHtml(html);
+  if (store === 'NYKAA') return parseNykaaHtml(html);
+  return parseFlipkartHtml(html, pid);
+}
+
+// =========================================================================
+// MASTER MULTI-STORE FETCHER (WITH 429 CONCURRENCY PROTECTION)
+// =========================================================================
+async function fetchProductUniversal(product) {
+  const store = getStoreFromUrl(product.url);
+  const pid = product.pid || null;
+
+  // Step 1: Fast Direct Try
   try {
     const directRes = await axios.get(product.url, {
       headers: {
@@ -315,8 +495,8 @@ async function fetchProductHybrid(product) {
       timeout: 8000
     });
     const html = String(directRes.data || '');
-    if (!html.includes('captcha') && !html.includes('Are you a human')) {
-      const extracted = extractFromHtml(html, pid);
+    if (!html.includes('captcha') && !html.includes('Are you a human') && !html.includes('Robot Check')) {
+      const extracted = parseByStore(store, html, pid);
       if (extracted.price || extracted.title) {
         return {
           ok: true,
@@ -332,12 +512,13 @@ async function fetchProductHybrid(product) {
     }
   } catch (e) {}
 
+  // Step 2: ScraperAPI India Residential IP (Sequential 1-by-1)
   if (SCRAPER_API_KEY) {
     try {
       const proxyUrl = `https://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&country_code=in&url=${encodeURIComponent(product.url)}`;
       const proxyRes = await axios.get(proxyUrl, { timeout: 35000 });
       const html = String(proxyRes.data || '');
-      const extracted = extractFromHtml(html, pid);
+      const extracted = parseByStore(store, html, pid);
 
       if (extracted.price || extracted.title || extracted.inStock !== null) {
         return {
@@ -352,6 +533,10 @@ async function fetchProductHybrid(product) {
         };
       }
     } catch (err) {
+      const status = err.response?.status;
+      if (status === 429) {
+        return { ok: false, rateLimited: true, error: 'Proxy busy (retrying next cycle)' };
+      }
       const msg = err.response?.data || err.message;
       return { ok: false, error: `Proxy error: ${String(msg).slice(0, 60)}` };
     }
@@ -375,7 +560,7 @@ async function safeUpdateProduct(id, updates) {
 }
 
 // =========================================================================
-// CONTINUOUS 24x7 REFRESH & AUTO RE-ARM WORKER
+// CONTINUOUS 24x7 SEQUENTIAL QUEUE WORKER (NO CONCURRENT OVERLAP)
 // =========================================================================
 let isRunning = false;
 async function checkAllProducts() {
@@ -391,7 +576,8 @@ async function checkAllProducts() {
     if (error || !products || products.length === 0) return;
 
     for (const p of products) {
-      const res = await fetchProductHybrid(p);
+      const store = getStoreFromUrl(p.url);
+      const res = await fetchProductUniversal(p);
       const nowIso = new Date().toISOString();
 
       if (!res.ok) {
@@ -399,7 +585,12 @@ async function checkAllProducts() {
           last_checked_at: nowIso,
           error_message: res.error
         });
-        console.log(`⚠️ [${p.pincode}] ${p.name}: ${res.error}`);
+        console.log(`⚠️ [${store}] [${p.pincode}] ${p.name}: ${res.error}`);
+        if (res.rateLimited) {
+          await new Promise(r => setTimeout(r, 8000));
+        } else {
+          await new Promise(r => setTimeout(r, 4000));
+        }
         continue;
       }
 
@@ -418,7 +609,7 @@ async function checkAllProducts() {
       };
 
       if (res.image && !p.image_url) updates.image_url = res.image;
-      if (res.title && (!p.name || p.name === 'Flipkart Product')) {
+      if (res.title && (!p.name || p.name.endsWith('Product'))) {
         updates.name = res.title;
       }
 
@@ -456,8 +647,8 @@ async function checkAllProducts() {
       }
 
       await safeUpdateProduct(p.id, updates);
-      console.log(`✅ [${res.source}] [${p.pincode}] ${updates.name || p.name} | ${updates.status} | ₹${updates.last_price || '-'}`);
-      await new Promise(r => setTimeout(r, 2000));
+      console.log(`✅ [${store}] [${p.pincode}] ${updates.name || p.name} | ${updates.status} | ₹${updates.last_price || '-'}`);
+      await new Promise(r => setTimeout(r, 4000));
     }
   } catch (e) {
     console.error('Loop error:', e.message);
@@ -469,7 +660,7 @@ async function checkAllProducts() {
 setInterval(checkAllProducts, CHECK_INTERVAL_SEC * 1000);
 
 // =========================================================================
-// CLEAN, ROCK-SOLID FRONTEND DASHBOARD (ZERO SYNTAX ERRORS)
+// ALL-IN-ONE DASHBOARD (AMAZON + FLIPKART + MYNTRA + NYKAA)
 // =========================================================================
 const HTML = [
   '<!DOCTYPE html>',
@@ -477,7 +668,7 @@ const HTML = [
   '<head>',
   '  <meta charset="UTF-8" />',
   '  <meta name="viewport" content="width=device-width, initial-scale=1.0" />',
-  '  <title>Flipkart Sniper 24x7 Tracker</title>',
+  '  <title>All-in-One Price & Stock Sniper 24x7</title>',
   '  <script src="https://cdn.tailwindcss.com"></script>',
   '</head>',
   '<body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8">',
@@ -486,9 +677,9 @@ const HTML = [
   '      <div>',
   '        <div class="flex items-center gap-2.5 flex-wrap">',
   '          <span class="h-3 w-3 rounded-full bg-emerald-500 animate-pulse"></span>',
-  '          <h1 class="text-xl md:text-2xl font-bold text-blue-400">Flipkart Sniper 24×7</h1>',
+  '          <h1 class="text-xl md:text-2xl font-bold text-blue-400">Multi-Store Sniper 24×7</h1>',
   '        </div>',
-  '        <p class="text-xs text-slate-400 mt-1">Continuous Stock & Target Price Monitoring • Hidden Coupons • Instant Telegram Alert</p>',
+  '        <p class="text-xs text-slate-400 mt-1">Amazon • Flipkart • Myntra • Nykaa — Stock & Target Price Monitoring + Auto Telegram Alert</p>',
   '      </div>',
   '      <div class="flex flex-wrap gap-2">',
   '        <button type="button" id="scanBtn" class="bg-blue-600 hover:bg-blue-500 active:scale-95 transition px-3.5 py-2 rounded-lg text-xs md:text-sm font-medium cursor-pointer">Scan Now</button>',
@@ -509,11 +700,11 @@ const HTML = [
   '    <!-- Main App -->',
   '    <div id="appBox" class="hidden">',
   '      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 mb-6 shadow-lg">',
-  '        <h2 class="text-base font-semibold mb-4 text-slate-200">+ Naya Product Track Karein</h2>',
+  '        <h2 class="text-base font-semibold mb-4 text-slate-200">+ Naya Product Track Karein (Amazon / Flipkart / Myntra / Nykaa)</h2>',
   '        <form id="addForm" class="grid grid-cols-1 md:grid-cols-12 gap-3">',
   '          <div class="md:col-span-6">',
-  '            <label class="text-xs text-slate-400">Flipkart Product Link *</label>',
-  '            <input type="url" id="url" required placeholder="https://www.flipkart.com/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white focus:outline-none focus:border-blue-500" />',
+  '            <label class="text-xs text-slate-400">Product Link (Amazon, Flipkart, Myntra, Nykaa) *</label>',
+  '            <input type="url" id="url" required placeholder="https://www.amazon.in/... or flipkart / myntra / nykaa" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white focus:outline-none focus:border-blue-500" />',
   '          </div>',
   '          <div class="md:col-span-2">',
   '            <label class="text-xs text-slate-400">Pin Code *</label>',
@@ -532,7 +723,7 @@ const HTML = [
   '          </div>',
   '          <div id="nameDiv" class="md:col-span-12">',
   '            <label class="text-xs text-slate-400">Product Name (Optional - Auto Detect Hoga)</label>',
-  '            <input type="text" id="name" placeholder="Auto detect from Flipkart" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white focus:outline-none focus:border-blue-500" />',
+  '            <input type="text" id="name" placeholder="Auto detect from store" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1 text-white focus:outline-none focus:border-blue-500" />',
   '          </div>',
   '          <div class="md:col-span-12 flex justify-end">',
   '            <button type="submit" id="submitBtn" class="bg-blue-600 hover:bg-blue-500 active:scale-95 transition px-6 py-2.5 rounded-lg text-sm font-medium cursor-pointer">Tracking List Mein Jodein</button>',
@@ -576,6 +767,20 @@ const HTML = [
   '',
   '      function escHtml(s) {',
   '        return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");',
+  '      }',
+  '',
+  '      function getStoreBadge(url) {',
+  '        var u = String(url || "").toLowerCase();',
+  '        if (u.indexOf("amazon.") !== -1 || u.indexOf("amzn.") !== -1) {',
+  '          return "<span class=\\"px-2 py-0.5 text-xs font-semibold rounded bg-amber-500/20 text-amber-300 border border-amber-500/30\\">AMAZON</span>";',
+  '        }',
+  '        if (u.indexOf("myntra.") !== -1) {',
+  '          return "<span class=\\"px-2 py-0.5 text-xs font-semibold rounded bg-pink-500/20 text-pink-300 border border-pink-500/30\\">MYNTRA</span>";',
+  '        }',
+  '        if (u.indexOf("nykaa.") !== -1) {',
+  '          return "<span class=\\"px-2 py-0.5 text-xs font-semibold rounded bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/30\\">NYKAA</span>";',
+  '        }',
+  '        return "<span class=\\"px-2 py-0.5 text-xs font-semibold rounded bg-blue-500/20 text-blue-300 border border-blue-500/30\\">FLIPKART</span>";',
   '      }',
   '',
   '      function toggleInputs() {',
@@ -629,7 +834,7 @@ const HTML = [
   '          setTimeout(function() {',
   '            btn.textContent = "Scan Now";',
   '            loadList();',
-  '          }, 4000);',
+  '          }, 4500);',
   '        });',
   '      }',
   '',
@@ -661,12 +866,13 @@ const HTML = [
   '          if (!items) return;',
   '          var box = byId("list");',
   '          if (!items.length) {',
-  '            box.innerHTML = "<div class=\\"text-center py-8 text-slate-500 text-sm bg-slate-900 border border-slate-800 rounded-xl\\">Abhi koi product add nahi hai. Upar link aur pincode daal kar add karein.</div>";',
+  '            box.innerHTML = "<div class=\\"text-center py-8 text-slate-500 text-sm bg-slate-900 border border-slate-800 rounded-xl\\">Abhi koi product add nahi hai. Upar Amazon, Flipkart, Myntra ya Nykaa ka link daal kar add karein.</div>";',
   '            return;',
   '          }',
   '          var out = "";',
   '          for (var i = 0; i < items.length; i++) {',
   '            var p = items[i];',
+  '            var storeBadge = getStoreBadge(p.url);',
   '            var statusBadge = "<span class=\\"px-2.5 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30\\">" + escHtml(p.status) + "</span>";',
   '            if (p.status === "IN_STOCK" || p.status === "PRICE_HIT") {',
   '              statusBadge = "<span class=\\"px-2.5 py-0.5 text-xs rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold\\">" + escHtml(p.status) + " ✅</span>";',
@@ -683,7 +889,7 @@ const HTML = [
   '',
   '            var thumb = p.image_url',
   '              ? "<img src=\\"" + escHtml(p.image_url) + "\\" class=\\"w-14 h-14 object-contain bg-white rounded-lg p-1 shrink-0\\" />"',
-  '              : "<div class=\\"w-14 h-14 bg-slate-800 rounded-lg flex items-center justify-center text-xs text-slate-500 shrink-0\\">FK</div>";',
+  '              : "<div class=\\"w-14 h-14 bg-slate-800 rounded-lg flex items-center justify-center text-xs text-slate-500 shrink-0\\">ITEM</div>";',
   '',
   '            var offersHtml = p.offers_text',
   '              ? "<div class=\\"text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-2.5 py-1 mt-1.5\\">🎁 <b>Offers:</b> " + escHtml(p.offers_text) + "</div>"',
@@ -702,92 +908,15 @@ const HTML = [
   '              "<div class=\\"flex items-start gap-3.5\\">" + thumb +',
   '                "<div class=\\"space-y-1.5\\">" +',
   '                  "<div class=\\"flex items-center gap-2 flex-wrap\\">" +',
+  '                    storeBadge +',
   '                    "<a href=\\"" + escHtml(p.url) + "\\" target=\\"_blank\\" class=\\"font-semibold text-slate-100 hover:text-blue-400\\">" + escHtml(p.name) + "</a>" +',
   '                    statusBadge + targetTag +',
   '                  "</div>" +',
-  '                  "<div class=\\"text-xs text-slate-400 flex flex-wrap gap-x-4 gap-y-1\\">" +',
-  '                    "<span>📍 PIN: <b class=\\"text-slate-200\\">" + escHtml(p.pincode) + "</b></span>" +',
-  '                    "<span>💰 Live Price: <b class=\\"text-slate-100\\">" + priceStr + "</b></span>" +',
-  '                    "<span>🏷️ MRP: <b class=\\"text-slate-400\\">" + mrpStr + "</b></span>" +',
-  '                    "<span>📉 Lowest: <b class=\\"text-blue-300\\">" + lowStr + "</b></span>" +',
-  '                    "<span>🕒 " + timeStr + "</span>" +',
-  '                  "</div>" + offersHtml + errLine +',
-  '                "</div>" +',
-  '              "</div>" +',
-  '              "<div class=\\"flex items-center gap-2 shrink-0 self-end md:self-center\\">" +',
-  '                "<button type=\\"button\\" data-action=\\"toggle\\" data-id=\\"" + escHtml(p.id) + "\\" data-active=\\"" + (!p.active) + "\\" class=\\"action-btn px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 cursor-pointer\\">" + (p.active ? "Pause" : "Resume") + "</button>" +',
-  '                "<button type=\\"button\\" data-action=\\"delete\\" data-id=\\"" + escHtml(p.id) + "\\" class=\\"action-btn px-3 py-1.5 text-xs rounded bg-rose-950 text-rose-300 border border-rose-800/40 cursor-pointer\\">Delete</button>" +',
-  '              "</div>" +',
-  '            "</div>";',
-  '          }',
-  '          box.innerHTML = out;',
-  '        }).catch(function() {',
-  '          showLogin("Network error, dubara try karein");',
-  '        });',
-  '      }',
-  '',
-  '      byId("loginBtn").addEventListener("click", doLogin);',
-  '      byId("pwd").addEventListener("keydown", function(e) { if (e.key === "Enter") doLogin(); });',
-  '      byId("logoutBtn").addEventListener("click", logout);',
-  '      byId("scanBtn").addEventListener("click", forceCheck);',
-  '      byId("testBtn").addEventListener("click", testTg);',
-  '      byId("refreshBtn").addEventListener("click", loadList);',
-  '      byId("mode").addEventListener("change", toggleInputs);',
-  '',
-  '      byId("list").addEventListener("click", function(e) {',
-  '        var btn = e.target.closest(".action-btn");',
-  '        if (!btn) return;',
-  '        var id = btn.getAttribute("data-id");',
-  '        var action = btn.getAttribute("data-action");',
-  '        if (action === "toggle") {',
-  '          var active = btn.getAttribute("data-active") === "true";',
-  '          api("/api/products/" + id, { method: "PATCH", body: JSON.stringify({ active: active }) }).then(loadList);',
-  '        } else if (action === "delete") {',
-  '          api("/api/products/" + id, { method: "DELETE" }).then(loadList);',
-  '        }',
-  '      });',
-  '',
-  '      byId("addForm").addEventListener("submit", function(e) {',
-  '        e.preventDefault();',
-  '        var sBtn = byId("submitBtn");',
-  '        sBtn.textContent = "Adding...";',
-  '        var body = {',
-  '          url: byId("url").value,',
-  '          pincode: byId("pincode").value,',
-  '          mode: byId("mode").value,',
-  '          targetPrice: byId("targetPrice").value,',
-  '          name: byId("name").value',
-  '        };',
-  '        api("/api/products", { method: "POST", body: JSON.stringify(body) }).then(function(res) {',
-  '          sBtn.textContent = "Tracking List Mein Jodein";',
-  '          if (res.ok) {',
-  '            byId("url").value = "";',
-  '            byId("name").value = "";',
-  '            byId("targetPrice").value = "";',
-  '            loadList();',
-  '            setTimeout(loadList, 4000);',
-  '          } else {',
-  '            res.json().then(function(d) { alert(d.error || "Error adding product"); });',
-  '          }',
-  '        }).catch(function() {',
-  '          sBtn.textContent = "Tracking List Mein Jodein";',
-  '          alert("Network error");',
-  '        });',
-  '      });',
-  '',
-  '      if (token) { loadList(); } else { showLogin(""); }',
-  '      setInterval(function() { if (token) loadList(); }, 8000);',
-  '    })();',
-  '  </script>',
-  '</body>',
-  '</html>'
-].join('\n');
-
-// =========================================================================
+  '              // =========================================================================
 // API ROUTES
 // =========================================================================
 app.get('/', (req, res) => res.type('html').send(HTML));
-app.get('/ping', (req, res) => res.send('OK - Sniper 24x7 Active'));
+app.get('/ping', (req, res) => res.send('OK - Multi-Store Sniper 24x7 Active'));
 
 app.get('/api/products', checkAuth, async (req, res) => {
   const { data, error } = await supabase.from('tracked_products').select('*').order('created_at', { ascending: false });
@@ -802,9 +931,9 @@ app.post('/api/scan-now', checkAuth, async (req, res) => {
 
 app.post('/api/products', checkAuth, async (req, res) => {
   const { url, pincode, mode, targetPrice, name } = req.body;
-  const parsed = cleanFlipkartUrl(url);
-  if (!parsed || !parsed.clean.includes('flipkart.com')) {
-    return res.status(400).json({ error: 'Sahi Flipkart product link dalein' });
+  const parsed = detectAndCleanUrl(url);
+  if (!parsed) {
+    return res.status(400).json({ error: 'Sirf Amazon, Flipkart, Myntra ya Nykaa ka sahi product link dalein' });
   }
   if (!/^\d{6}$/.test(String(pincode).trim())) {
     return res.status(400).json({ error: 'Sahi 6-digit Pincode dalein' });
@@ -813,7 +942,7 @@ app.post('/api/products', checkAuth, async (req, res) => {
   const validMode = mode === 'PRICE' ? 'PRICE' : 'STOCK';
 
   const { error } = await supabase.from('tracked_products').insert([{
-    name: name?.trim() || 'Flipkart Product',
+    name: name?.trim() || `${parsed.store} Product`,
     url: parsed.clean,
     pid: parsed.pid || null,
     lid: parsed.lid || null,
@@ -853,12 +982,12 @@ app.post('/api/test-telegram', checkAuth, async (req, res) => {
       mrp: 89900,
       offers: ['🎟️ Coupon: ₹4000 Instant Bank Discount', 'Special Price: Get extra ₹3000 off']
     },
-    'SNIPER BOT TEST ALERT!'
+    'MULTI-STORE SNIPER ALERT!'
   );
   res.status(r.ok ? 200 : 500).json(r);
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Flipkart Sniper Live on Port ${PORT}`);
+  console.log(`🚀 Multi-Store Sniper (Amazon + Flipkart + Myntra + Nykaa) Live on Port ${PORT}`);
   checkAllProducts();
 });
