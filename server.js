@@ -7,16 +7,21 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // =========================================================================
-// PRE-CONFIGURED CREDENTIALS (Supabase + Telegram + ScraperAPI + EarnKaro)
+// PRE-CONFIGURED CREDENTIALS
 // =========================================================================
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://vpqhayqkovxerxertwuv.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZwcWhheXFrb3Z4ZXJ4ZXJ0d3V2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUwNzI1MzYsImV4cCI6MjExMDY0ODUzNn0.3vAnKw1pzzVMt4MWmKIh82Qgghkf_6rL9EtDD0W-ZOc';
 const BOT_TOKEN = process.env.BOT_TOKEN || '9242430164:AAE9YigL7yAWhKKX_EUZlQBiCWx0NSgUCpE';
 const CHAT_ID = process.env.CHAT_ID || '-1004305890096';
-const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || 'd8c5f8bb94d6c8e304c5ecf9d55bb57f';
+// Comma-separated keys supported (e.g. "key1,key2") for automatic rotation
+const SCRAPER_API_KEYS = (process.env.SCRAPER_API_KEY || 'd8c5f8bb94d6c8e304c5ecf9d55bb57f')
+  .split(',')
+  .map(k => k.trim())
+  .filter(Boolean);
 const EARNKARO_TOKEN = process.env.EARNKARO_TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2NmQ5ZGUzZmY4YjQ0MTg3OTVkN2JiYzYiLCJlYXJua2FybyI6IjM3NDQzNTgiLCJpYXQiOjE3OTUxMjA0MTF9.Ck58ZbaopkF5nTtiEnMoGh9yuGfulKkORJR-rZlRmAw';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const CHECK_INTERVAL_SEC = 180;
+const REQUEST_GAP_MS = 6500; // Strict 6.5s gap between requests so multiple products never collide
 // =========================================================================
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -32,11 +37,16 @@ function checkAuth(req, res, next) {
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36'
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1'
 ];
 
 function getRandomUA() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
 function parsePriceNumber(str) {
@@ -47,7 +57,7 @@ function parsePriceNumber(str) {
 }
 
 // =========================================================================
-// MULTI-STORE URL CLEANER & IDENTIFIER (Amazon, Flipkart, Myntra, Nykaa)
+// MULTI-STORE URL CLEANER (Amazon, Flipkart, Myntra, Nykaa)
 // =========================================================================
 function detectAndCleanUrl(rawUrl) {
   try {
@@ -144,7 +154,7 @@ async function convertAffiliateLink(originalUrl) {
 }
 
 // =========================================================================
-// TELEGRAM ALERT SENDER (STORE BADGE + PHOTO + HIDDEN OFFERS + AFFILIATE LINK)
+// TELEGRAM ALERT SENDER
 // =========================================================================
 async function sendTelegram(product, info, heading) {
   const store = getStoreFromUrl(product.url);
@@ -248,7 +258,6 @@ function extractSchemaBase($) {
   return { title, price, mrp, image, inStock };
 }
 
-// 1. FLIPKART PARSER
 function parseFlipkartHtml(html, targetPid) {
   const $ = cheerio.load(html);
   const base = extractSchemaBase($);
@@ -317,7 +326,6 @@ function parseFlipkartHtml(html, targetPid) {
   return { title, price, mrp, image, inStock, offers: offersList.slice(0, 4) };
 }
 
-// 2. AMAZON.IN PARSER
 function parseAmazonHtml(html) {
   const $ = cheerio.load(html);
   const base = extractSchemaBase($);
@@ -353,7 +361,6 @@ function parseAmazonHtml(html) {
   const mainImg = $('#landingImage').attr('data-old-hires') || $('#landingImage').attr('src') || $('#imgBlkFront').attr('src');
   if (mainImg && mainImg.startsWith('http')) image = mainImg;
 
-  // Amazon Coupon & Bank Offers
   const couponLabel = $('#couponBadgeRegularVpc, label[id*="couponText"], .promoPriceBlockMessage').first().text().replace(/\s+/g, ' ').trim();
   if (couponLabel && couponLabel.length > 4) {
     offersList.push(`🎟️ Coupon: ${couponLabel.slice(0, 110)}`);
@@ -365,7 +372,6 @@ function parseAmazonHtml(html) {
     }
   });
 
-  // Amazon Stock Check
   const availText = $('#availability').text().toLowerCase();
   const hasBuyBtn = $('#add-to-cart-button').length > 0 || $('#buy-now-button').length > 0;
   if (availText.includes('currently unavailable') || availText.includes('out of stock')) {
@@ -377,7 +383,6 @@ function parseAmazonHtml(html) {
   return { title, price, mrp, image, inStock, offers: offersList.slice(0, 4) };
 }
 
-// 3. MYNTRA PARSER
 function parseMyntraHtml(html) {
   const $ = cheerio.load(html);
   const base = extractSchemaBase($);
@@ -399,8 +404,7 @@ function parseMyntraHtml(html) {
         if (imgUrl) image = imgUrl.replace('($height)', '720').replace('($width)', '540').replace('($qualityPercentage)', '90');
 
         if (Array.isArray(pdp.sizes)) {
-          const anyAvailable = pdp.sizes.some(s => s.available === true);
-          inStock = anyAvailable;
+          inStock = pdp.sizes.some(s => s.available === true);
         }
         if (Array.isArray(pdp.offers)) {
           for (const off of pdp.offers.slice(0, 3)) {
@@ -428,7 +432,6 @@ function parseMyntraHtml(html) {
   return { title, price, mrp, image, inStock, offers: offersList.slice(0, 4) };
 }
 
-// 4. NYKAA PARSER
 function parseNykaaHtml(html) {
   const $ = cheerio.load(html);
   const base = extractSchemaBase($);
@@ -478,71 +481,110 @@ function parseByStore(store, html, pid) {
 }
 
 // =========================================================================
-// MASTER MULTI-STORE FETCHER (WITH 429 CONCURRENCY PROTECTION)
+// GLOBAL SINGLE-THREADED MUTEX + MULTI-KEY ROTATION FETCHER
+// (Prevents "multiple users connecting from your IP" even with 50+ products)
 // =========================================================================
-async function fetchProductUniversal(product) {
-  const store = getStoreFromUrl(product.url);
-  const pid = product.pid || null;
+let proxyMutex = Promise.resolve();
+let lastRequestTimestamp = 0;
+let keyRotationIndex = 0;
 
-  // Step 1: Fast Direct Try
-  try {
-    const directRes = await axios.get(product.url, {
-      headers: {
-        'User-Agent': getRandomUA(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8'
-      },
-      timeout: 8000
-    });
-    const html = String(directRes.data || '');
-    if (!html.includes('captcha') && !html.includes('Are you a human') && !html.includes('Robot Check')) {
-      const extracted = parseByStore(store, html, pid);
-      if (extracted.price || extracted.title) {
-        return {
-          ok: true,
-          inStock: extracted.inStock === null ? true : extracted.inStock,
-          title: extracted.title,
-          price: extracted.price,
-          mrp: extracted.mrp,
-          image: extracted.image,
-          offers: extracted.offers,
-          source: 'Direct'
-        };
-      }
+function runInSerialQueue(taskFn) {
+  const next = proxyMutex.then(async () => {
+    const elapsed = Date.now() - lastRequestTimestamp;
+    if (elapsed < REQUEST_GAP_MS) {
+      await sleep(REQUEST_GAP_MS - elapsed);
     }
-  } catch (e) {}
-
-  // Step 2: ScraperAPI India Residential IP (Sequential 1-by-1)
-  if (SCRAPER_API_KEY) {
     try {
-      const proxyUrl = `https://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&country_code=in&url=${encodeURIComponent(product.url)}`;
-      const proxyRes = await axios.get(proxyUrl, { timeout: 35000 });
-      const html = String(proxyRes.data || '');
-      const extracted = parseByStore(store, html, pid);
-
-      if (extracted.price || extracted.title || extracted.inStock !== null) {
-        return {
-          ok: true,
-          inStock: extracted.inStock === null ? true : extracted.inStock,
-          title: extracted.title,
-          price: extracted.price,
-          mrp: extracted.mrp,
-          image: extracted.image,
-          offers: extracted.offers,
-          source: 'India IP'
-        };
-      }
-    } catch (err) {
-      const status = err.response?.status;
-      if (status === 429) {
-        return { ok: false, rateLimited: true, error: 'Proxy busy (retrying next cycle)' };
-      }
-      const msg = err.response?.data || err.message;
-      return { ok: false, error: `Proxy error: ${String(msg).slice(0, 60)}` };
+      return await taskFn();
+    } finally {
+      lastRequestTimestamp = Date.now();
     }
-  }
+  });
+  proxyMutex = next.catch(() => {});
+  return next;
+}
 
-  return { ok: false, error: 'Retrying in next cycle' };
+async function fetchProductUniversal(product) {
+  return runInSerialQueue(async () => {
+    const store = getStoreFromUrl(product.url);
+    const pid = product.pid || null;
+
+    // 1. Direct Fetch First (Saves proxy concurrency & credits)
+    try {
+      const directRes = await axios.get(product.url, {
+        headers: {
+          'User-Agent': getRandomUA(),
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8',
+          'Cache-Control': 'no-cache'
+        },
+        timeout: 9000
+      });
+      const html = String(directRes.data || '');
+      if (
+        !html.includes('captcha') &&
+        !html.includes('Are you a human') &&
+        !html.includes('Robot Check') &&
+        !html.includes('Type the characters you see')
+      ) {
+        const extracted = parseByStore(store, html, pid);
+        if (extracted.price || extracted.title) {
+          return {
+            ok: true,
+            inStock: extracted.inStock === null ? true : extracted.inStock,
+            title: extracted.title,
+            price: extracted.price,
+            mrp: extracted.mrp,
+            image: extracted.image,
+            offers: extracted.offers,
+            source: 'Direct'
+          };
+        }
+      }
+    } catch (e) {}
+
+    // 2. ScraperAPI India Residential IP with Automatic Key Rotation & 1 Retry on Shared-IP Limit
+    if (SCRAPER_API_KEYS.length > 0) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const apiKey = SCRAPER_API_KEYS[keyRotationIndex % SCRAPER_API_KEYS.length];
+        keyRotationIndex++;
+
+        try {
+          const proxyUrl = `https://api.scraperapi.com?api_key=${apiKey}&country_code=in&url=${encodeURIComponent(product.url)}`;
+          const proxyRes = await axios.get(proxyUrl, { timeout: 35000 });
+          const html = String(proxyRes.data || '');
+
+          if (html.includes('multiple users connecting')) {
+            await sleep(8000);
+            continue;
+          }
+
+          const extracted = parseByStore(store, html, pid);
+          if (extracted.price || extracted.title || extracted.inStock !== null) {
+            return {
+              ok: true,
+              inStock: extracted.inStock === null ? true : extracted.inStock,
+              title: extracted.title,
+              price: extracted.price,
+              mrp: extracted.mrp,
+              image: extracted.image,
+              offers: extracted.offers,
+              source: 'India IP'
+            };
+          }
+        } catch (err) {
+          const rawErr = String(err.response?.data || err.message || '');
+          if (rawErr.includes('multiple users connecting') || err.response?.status === 429) {
+            await sleep(9000);
+            continue;
+          }
+          return { ok: false, error: `Retrying next cycle (${err.response?.status || 'net'})` };
+        }
+      }
+    }
+
+    return { ok: false, error: 'Queued for next cycle' };
+  });
 }
 
 async function safeUpdateProduct(id, updates) {
@@ -560,96 +602,99 @@ async function safeUpdateProduct(id, updates) {
 }
 
 // =========================================================================
-// CONTINUOUS 24x7 SEQUENTIAL QUEUE WORKER (NO CONCURRENT OVERLAP)
+// CONTINUOUS 24x7 QUEUE WORKER
 // =========================================================================
 let isRunning = false;
+let scanRequested = false;
+
 async function checkAllProducts() {
-  if (isRunning) return;
+  if (isRunning) {
+    scanRequested = true;
+    return;
+  }
   isRunning = true;
 
   try {
-    const { data: products, error } = await supabase
-      .from('tracked_products')
-      .select('*')
-      .eq('active', true);
+    do {
+      scanRequested = false;
+      const { data: products, error } = await supabase
+        .from('tracked_products')
+        .select('*')
+        .eq('active', true)
+        .order('created_at', { ascending: false });
 
-    if (error || !products || products.length === 0) return;
+      if (error || !products || products.length === 0) break;
 
-    for (const p of products) {
-      const store = getStoreFromUrl(p.url);
-      const res = await fetchProductUniversal(p);
-      const nowIso = new Date().toISOString();
+      for (const p of products) {
+        const store = getStoreFromUrl(p.url);
+        const res = await fetchProductUniversal(p);
+        const nowIso = new Date().toISOString();
 
-      if (!res.ok) {
-        await safeUpdateProduct(p.id, {
-          last_checked_at: nowIso,
-          error_message: res.error
-        });
-        console.log(`⚠️ [${store}] [${p.pincode}] ${p.name}: ${res.error}`);
-        if (res.rateLimited) {
-          await new Promise(r => setTimeout(r, 8000));
-        } else {
-          await new Promise(r => setTimeout(r, 4000));
+        if (!res.ok) {
+          await safeUpdateProduct(p.id, {
+            last_checked_at: nowIso,
+            error_message: res.error
+          });
+          console.log(`⏳ [${store}] [${p.pincode}] ${p.name}: ${res.error}`);
+          continue;
         }
-        continue;
-      }
 
-      const livePrice = res.price || p.last_price || null;
-      const prevLowest = Number(p.lowest_price) || 0;
-      const newLowest = livePrice && (!prevLowest || livePrice < prevLowest) ? livePrice : prevLowest || livePrice;
-      const offersJoined = res.offers && res.offers.length > 0 ? res.offers.join(' | ') : null;
+        const livePrice = res.price || p.last_price || null;
+        const prevLowest = Number(p.lowest_price) || 0;
+        const newLowest = livePrice && (!prevLowest || livePrice < prevLowest) ? livePrice : prevLowest || livePrice;
+        const offersJoined = res.offers && res.offers.length > 0 ? res.offers.join(' | ') : null;
 
-      const updates = {
-        last_checked_at: nowIso,
-        error_message: null,
-        last_price: livePrice,
-        last_mrp: res.mrp || p.last_mrp,
-        lowest_price: newLowest,
-        offers_text: offersJoined
-      };
+        const updates = {
+          last_checked_at: nowIso,
+          error_message: null,
+          last_price: livePrice,
+          last_mrp: res.mrp || p.last_mrp,
+          lowest_price: newLowest,
+          offers_text: offersJoined
+        };
 
-      if (res.image && !p.image_url) updates.image_url = res.image;
-      if (res.title && (!p.name || p.name.endsWith('Product'))) {
-        updates.name = res.title;
-      }
+        if (res.image && !p.image_url) updates.image_url = res.image;
+        if (res.title && (!p.name || p.name.endsWith('Product'))) {
+          updates.name = res.title;
+        }
 
-      if (!res.inStock) {
-        updates.status = 'OUT_OF_STOCK';
-        updates.alert_sent = false;
-      } else {
-        if (p.mode === 'PRICE') {
-          const targetP = Number(p.target_price) || 0;
-          if (livePrice && livePrice <= targetP) {
-            updates.status = 'PRICE_HIT';
+        if (!res.inStock) {
+          updates.status = 'OUT_OF_STOCK';
+          updates.alert_sent = false;
+        } else {
+          if (p.mode === 'PRICE') {
+            const targetP = Number(p.target_price) || 0;
+            if (livePrice && livePrice <= targetP) {
+              updates.status = 'PRICE_HIT';
+              if (!p.alert_sent) {
+                updates.alert_sent = true;
+                await sendTelegram(
+                  { ...p, ...updates },
+                  res,
+                  `PRICE DROP ALERT (₹${livePrice.toLocaleString('en-IN')} ≤ ₹${targetP.toLocaleString('en-IN')})!`
+                );
+              }
+            } else {
+              updates.status = 'WAITING_PRICE';
+              updates.alert_sent = false;
+            }
+          } else {
+            updates.status = 'IN_STOCK';
             if (!p.alert_sent) {
               updates.alert_sent = true;
               await sendTelegram(
                 { ...p, ...updates },
                 res,
-                `PRICE DROP ALERT (₹${livePrice.toLocaleString('en-IN')} ≤ ₹${targetP.toLocaleString('en-IN')})!`
+                'STOCK AA GAYA HAI! JALDI ORDER KAREIN!'
               );
             }
-          } else {
-            updates.status = 'WAITING_PRICE';
-            updates.alert_sent = false;
-          }
-        } else {
-          updates.status = 'IN_STOCK';
-          if (!p.alert_sent) {
-            updates.alert_sent = true;
-            await sendTelegram(
-              { ...p, ...updates },
-              res,
-              'STOCK AA GAYA HAI! JALDI ORDER KAREIN!'
-            );
           }
         }
-      }
 
-      await safeUpdateProduct(p.id, updates);
-      console.log(`✅ [${store}] [${p.pincode}] ${updates.name || p.name} | ${updates.status} | ₹${updates.last_price || '-'}`);
-      await new Promise(r => setTimeout(r, 4000));
-    }
+        await safeUpdateProduct(p.id, updates);
+        console.log(`✅ [${store}] [${p.pincode}] ${updates.name || p.name} | ${updates.status} | ₹${updates.last_price || '-'}`);
+      }
+    } while (scanRequested);
   } catch (e) {
     console.error('Loop error:', e.message);
   } finally {
@@ -668,7 +713,7 @@ const HTML = [
   '<head>',
   '  <meta charset="UTF-8" />',
   '  <meta name="viewport" content="width=device-width, initial-scale=1.0" />',
-  '  <title>All-in-One Price & Stock Sniper 24x7</title>',
+  '  <title>Multi-Store Sniper 24x7</title>',
   '  <script src="https://cdn.tailwindcss.com"></script>',
   '</head>',
   '<body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8">',
@@ -834,7 +879,7 @@ const HTML = [
   '          setTimeout(function() {',
   '            btn.textContent = "Scan Now";',
   '            loadList();',
-  '          }, 4500);',
+  '          }, 5000);',
   '        });',
   '      }',
   '',
@@ -896,7 +941,7 @@ const HTML = [
   '              : "";',
   '',
   '            var errLine = p.error_message',
-  '              ? "<div class=\\"text-xs text-rose-400 mt-1\\">⚠️ " + escHtml(p.error_message) + "</div>"',
+  '              ? "<div class=\\"text-xs text-slate-400 mt-1\\">⏳ " + escHtml(p.error_message) + "</div>"',
   '              : "";',
   '',
   '            var priceStr = p.last_price ? "₹" + Number(p.last_price).toLocaleString("en-IN") : "-";',
@@ -972,7 +1017,7 @@ const HTML = [
   '            byId("name").value = "";',
   '            byId("targetPrice").value = "";',
   '            loadList();',
-  '            setTimeout(loadList, 5000);',
+  '            setTimeout(loadList, 5500);',
   '          } else {',
   '            res.json().then(function(d) { alert(d.error || "Error adding product"); });',
   '          }',
@@ -1066,6 +1111,6 @@ app.post('/api/test-telegram', checkAuth, async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Multi-Store Sniper (Amazon + Flipkart + Myntra + Nykaa) Live on Port ${PORT}`);
+  console.log(`🚀 Multi-Store Sniper Live on Port ${PORT}`);
   checkAllProducts();
 });
