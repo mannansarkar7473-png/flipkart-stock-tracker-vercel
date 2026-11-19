@@ -7,14 +7,15 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // =========================================================================
-// PRE-CONFIGURED CREDENTIALS
+// PRE-CONFIGURED CREDENTIALS (Supabase + Telegram + ScraperAPI India IP)
 // =========================================================================
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://vpqhayqkovxerxertwuv.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZwcWhheXFrb3Z4ZXJ4ZXJ0d3V2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUwNzI1MzYsImV4cCI6MjExMDY0ODUzNn0.3vAnKw1pzzVMt4MWmKIh82Qgghkf_6rL9EtDD0W-ZOc';
 const BOT_TOKEN = process.env.BOT_TOKEN || '9242430164:AAE9YigL7yAWhKKX_EUZlQBiCWx0NSgUCpE';
 const CHAT_ID = process.env.CHAT_ID || '-1004305890096';
+const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || 'd8c5f8bb94d6c8e304c5ecf9d55bb57f';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-const CHECK_INTERVAL_SEC = 35;
+const CHECK_INTERVAL_SEC = 180; // 3 mins (Saves ScraperAPI credits + instant via Scan Now)
 // =========================================================================
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -30,9 +31,7 @@ function checkAuth(req, res, next) {
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 ];
 
 function getRandomUA() {
@@ -118,7 +117,7 @@ async function sendTelegram(product, info, heading) {
 }
 
 // =========================================================================
-// ENGINE 1: CHEERIO DOM + LD+JSON + INITIAL_STATE PARSER (GitHub Scraper Flow)
+// ENGINE 1: CHEERIO DOM + LD+JSON + INITIAL_STATE PARSER
 // =========================================================================
 function extractFromHtml(html, targetPid) {
   const $ = cheerio.load(html);
@@ -156,7 +155,7 @@ function extractFromHtml(html, targetPid) {
     } catch (e) {}
   });
 
-  // 1B. Flipkart HTML DOM Selectors (Both Modern & Classic Classes)
+  // 1B. Flipkart HTML DOM Selectors
   const titleSelectors = ['span.VU-ZEz', 'span.B_NuCI', 'h1._6EBuvT span', 'h1'];
   for (const sel of titleSelectors) {
     const t = $(sel).first().text().trim();
@@ -195,11 +194,14 @@ function extractFromHtml(html, targetPid) {
   }
 
   if (!image) {
-    const imgSrc = $('img.DByuf4.IZexXJ').attr('src') || $('img._396cs4._2amPTt._3qGmMb').attr('src') || $('meta[property="og:image"]').attr('content');
+    const imgSrc =
+      $('img.DByuf4.IZexXJ').attr('src') ||
+      $('img._396cs4._2amPTt._3qGmMb').attr('src') ||
+      $('meta[property="og:image"]').attr('content');
     if (imgSrc && imgSrc.startsWith('http')) image = imgSrc;
   }
 
-  // 1C. Stock Detection from Main Action Buttons & Status Text
+  // 1C. Stock Detection from Main Buttons & Status Text
   const bodyText = $('body').text();
   const hasBuyBtn =
     $('button:contains("Buy Now")').length > 0 ||
@@ -248,111 +250,67 @@ function extractFromHtml(html, targetPid) {
 }
 
 // =========================================================================
-// ENGINE 2: PINCODE SERVICEABILITY CHECK (1.rome.api / dynamic product)
-// =========================================================================
-async function checkPincodeAvailability(product, lid) {
-  if (!lid) return null;
-  try {
-    const res = await axios.post(
-      'https://1.rome.api.flipkart.com/api/3/page/dynamic/product',
-      {
-        requestContext: {
-          productId: product.pid || undefined,
-          listingId: lid
-        },
-        locationContext: {
-          pincode: String(product.pincode)
-        }
-      },
-      {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          'X-User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 FKUA/website/42/website/Desktop',
-          'Content-Type': 'application/json',
-          'Origin': 'https://www.flipkart.com',
-          'Referer': product.url
-        },
-        timeout: 10000
-      }
-    );
-
-    const raw = JSON.stringify(res.data || {});
-    if (raw.includes('"NOT_SERVICEABLE"') || raw.includes('"OUT_OF_STOCK"') || raw.includes('"Currently out of stock"')) {
-      return false;
-    }
-    if (raw.includes('"BUY_NOW"') || raw.includes('"ADD_TO_CART"') || raw.includes('"IN_STOCK"')) {
-      return true;
-    }
-  } catch (e) {}
-  return null;
-}
-
-// =========================================================================
-// MASTER HYBRID FETCHER (Desktop HTML -> Mobile dl.flipkart -> Pincode Check)
+// MASTER HYBRID FETCHER (Direct Try -> ScraperAPI India Residential IP)
 // =========================================================================
 async function fetchProductHybrid(product) {
   const u = new URL(product.url);
   const pid = product.pid || u.searchParams.get('pid');
-  const lid = product.lid || u.searchParams.get('lid');
 
-  const urlsToTry = [
-    { url: product.url, label: 'Desktop DOM' },
-    { url: product.url.replace('www.flipkart.com', 'dl.flipkart.com/dl'), label: 'Mobile Lite DOM' }
-  ];
-
-  let bestData = null;
-
-  for (const target of urlsToTry) {
-    try {
-      const res = await axios.get(target.url, {
-        headers: {
-          'User-Agent': getRandomUA(),
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8',
-          'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache',
-          'Upgrade-Insecure-Requests': '1'
-        },
-        maxRedirects: 5,
-        timeout: 15000
-      });
-
-      const html = String(res.data || '');
-      if (html.includes('captcha') || html.includes('Are you a human')) {
-        continue;
-      }
-
+  // Step 1: Try Direct Fast Fetch First (0 Credit Used if succeeds)
+  try {
+    const directRes = await axios.get(product.url, {
+      headers: {
+        'User-Agent': getRandomUA(),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8'
+      },
+      timeout: 8000
+    });
+    const html = String(directRes.data || '');
+    if (!html.includes('captcha') && !html.includes('Are you a human')) {
       const extracted = extractFromHtml(html, pid);
+      if (extracted.price || extracted.title) {
+        return {
+          ok: true,
+          inStock: extracted.inStock === null ? true : extracted.inStock,
+          title: extracted.title,
+          price: extracted.price,
+          mrp: extracted.mrp,
+          discount: extracted.discount || 0,
+          image: extracted.image,
+          source: 'Direct'
+        };
+      }
+    }
+  } catch (e) {}
+
+  // Step 2: Bypass Datacenter Block via ScraperAPI Indian Residential IP (country_code=in)
+  if (SCRAPER_API_KEY) {
+    try {
+      const proxyUrl = `https://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&country_code=in&url=${encodeURIComponent(product.url)}`;
+      const proxyRes = await axios.get(proxyUrl, { timeout: 35000 });
+      const html = String(proxyRes.data || '');
+      const extracted = extractFromHtml(html, pid);
+
       if (extracted.price || extracted.title || extracted.inStock !== null) {
-        bestData = { ...extracted, source: target.label };
-        break;
+        return {
+          ok: true,
+          inStock: extracted.inStock === null ? true : extracted.inStock,
+          title: extracted.title,
+          price: extracted.price,
+          mrp: extracted.mrp,
+          discount: extracted.discount || 0,
+          image: extracted.image,
+          source: 'ScraperAPI India IP'
+        };
       }
     } catch (err) {
-      // Try next URL in fallback chain
+      const msg = err.response?.data || err.message;
+      return { ok: false, error: `Proxy error: ${String(msg).slice(0, 60)}` };
     }
   }
 
-  // Verify Pincode delivery availability if lid is available
-  const pinStock = await checkPincodeAvailability({ ...product, pid }, lid);
-  if (pinStock !== null) {
-    if (!bestData) bestData = { title: null, price: null, mrp: null, discount: 0, image: null, source: 'Pincode API' };
-    bestData.inStock = pinStock;
-  }
-
-  if (!bestData || (bestData.inStock === null && !bestData.price)) {
-    return { ok: false, error: 'Flipkart temporary block / retrying in 35s' };
-  }
-
-  return {
-    ok: true,
-    inStock: bestData.inStock === null ? true : bestData.inStock,
-    title: bestData.title,
-    price: bestData.price,
-    mrp: bestData.mrp,
-    discount: bestData.discount || 0,
-    image: bestData.image,
-    source: bestData.source
-  };
+  return { ok: false, error: 'Retrying in next cycle' };
 }
 
 // Safe Supabase Update
@@ -469,7 +427,7 @@ async function checkAllProducts() {
 
       await safeUpdateProduct(p.id, updates);
       console.log(`✅ [${res.source}] [${p.pincode}] ${updates.name || p.name} | ${updates.status} | ₹${updates.last_price || '-'} | ${updates.last_discount}% OFF`);
-      await new Promise(r => setTimeout(r, 3500));
+      await new Promise(r => setTimeout(r, 2000));
     }
   } catch (e) {
     console.error('Loop error:', e.message);
@@ -481,7 +439,7 @@ async function checkAllProducts() {
 setInterval(checkAllProducts, CHECK_INTERVAL_SEC * 1000);
 
 // =========================================================================
-// DASHBOARD UI (WITH DIAGNOSTIC STATUS & INSTANT CHECK BUTTON)
+// DASHBOARD UI
 // =========================================================================
 const HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -498,12 +456,12 @@ const HTML = `<!DOCTYPE html>
         <div class="flex items-center gap-2.5">
           <span class="h-3 w-3 rounded-full bg-emerald-500 animate-pulse"></span>
           <h1 class="text-2xl font-bold text-blue-400">Flipkart Hybrid Sniper 24×7</h1>
-          <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">Cheerio DOM + Mobile + Schema</span>
+          <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">India Residential IP Active</span>
         </div>
-        <p class="text-xs text-slate-400 mt-1">Har 35s mein live check • Exact Price, MRP, Discount % & Stock Arrival par Telegram Deal Card</p>
+        <p class="text-xs text-slate-400 mt-1">Exact Price, MRP, Discount % & Stock Arrival par instant Telegram Deal Card</p>
       </div>
       <div class="flex gap-2">
-        <button onclick="forceCheck()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg text-sm font-medium cursor-pointer">Scan Now</button>
+        <button onclick="forceCheck()" id="scanBtn" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg text-sm font-medium cursor-pointer">Scan Now</button>
         <button onclick="testTg()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg text-sm font-medium cursor-pointer">Test Telegram</button>
         <button onclick="logout()" class="bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-lg text-sm cursor-pointer">Logout</button>
       </div>
@@ -545,7 +503,7 @@ const HTML = `<!DOCTYPE html>
           </div>
           <div id="discDiv" class="md:col-span-4 hidden">
             <label class="text-xs text-amber-400">Target Discount % *</label>
-            <input type="number" id="targetDiscount" min="1" max="99" placeholder="e.g. 20 (20% ya zyada OFF par)" class="w-full bg-slate-950 border border-amber-500/50 rounded-lg px-3 py-2 text-sm mt-1" />
+            <input type="number" id="targetDiscount" min="1" max="99" placeholder="e.g. 12 (12% ya zyada OFF par)" class="w-full bg-slate-950 border border-amber-500/50 rounded-lg px-3 py-2 text-sm mt-1" />
           </div>
           <div id="nameDiv" class="md:col-span-12">
             <label class="text-xs text-slate-400">Product Name (Optional - Auto Detect Hoga)</label>
@@ -606,8 +564,10 @@ const HTML = `<!DOCTYPE html>
     }
 
     async function forceCheck() {
+      const btn = document.getElementById('scanBtn');
+      btn.innerText = 'Scanning...';
       await api('/api/scan-now', { method: 'POST' });
-      setTimeout(loadList, 2500);
+      setTimeout(() => { btn.innerText = 'Scan Now'; loadList(); }, 5000);
     }
 
     async function loadList() {
@@ -696,6 +656,7 @@ const HTML = `<!DOCTYPE html>
         document.getElementById('name').value = '';
         document.getElementById('targetPrice').value = '';
         document.getElementById('targetDiscount').value = '';
+        setTimeout(loadList, 4000);
         loadList();
       } else {
         const d = await res.json();
@@ -791,17 +752,17 @@ app.post('/api/test-telegram', checkAuth, async (req, res) => {
   const r = await sendTelegram(
     { name: 'Test Product', pincode: '462023', url: 'https://www.flipkart.com' },
     {
-      title: 'Hybrid Sniper 24x7 Tracker Connected!',
+      title: 'nuturge Green Pista (Unsalted Pista) 250gm',
       price: 946,
       mrp: 1099,
       discount: 14
     },
-    'HYBRID SNIPER ACTIVE!'
+    'INDIA RESIDENTIAL IP SNIPER ACTIVE!'
   );
   res.status(r.ok ? 200 : 500).json(r);
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Hybrid Sniper Tracker Live on Port ${PORT}`);
+  console.log(`🚀 Hybrid Sniper Tracker (India IP) Live on Port ${PORT}`);
   checkAllProducts();
 });
