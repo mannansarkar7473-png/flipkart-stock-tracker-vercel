@@ -11,12 +11,12 @@ const PORT = process.env.PORT || 3000;
 // =========================================================================
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://vpqhayqkovxerxertwuv.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZwcWhheXFrb3Z4ZXJ4ZXJ0d3V2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUwNzI1MzYsImV4cCI6MjExMDY0ODUzNn0.3vAnKw1pzzVMt4MWmKIh82Qgghkf_6rL9EtDD0W-ZOc';
-const BOT_TOKEN = process.env.BOT_TOKEN || '9242430164:AAE9YigL7yAWhKKX_EUZlQBiCWx0NSgUCpE';
+const BOT_TOKEN = process.env.BOT_TOKEN || '9242430164:AAEAAIcATBMTKDgTevoef5TekjniPP-7dSI';
 const CHAT_ID = process.env.CHAT_ID || '-1004305890096';
 const SCRAPER_API_KEY = process.env.SCRAPER_API_KEY || 'd8c5f8bb94d6c8e304c5ecf9d55bb57f';
 const EARNKARO_TOKEN = process.env.EARNKARO_TOKEN || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI2NmQ5ZGUzZmY4YjQ0MTg3OTVkN2JiYzYiLCJlYXJua2FybyI6IjM3NDQzNTgiLCJpYXQiOjE3OTUxMjA0MTF9.Ck58ZbaopkF5nTtiEnMoGh9yuGfulKkORJR-rZlRmAw';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-const CHECK_INTERVAL_SEC = 180; // Har 3 minute mein continuous auto-refresh + Scan Now instant check
+const CHECK_INTERVAL_SEC = 180;
 // =========================================================================
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -84,7 +84,6 @@ async function convertToEarnKaro(originalUrl) {
     );
 
     const data = res.data;
-    // Extract converted URL from EarnKaro response
     if (typeof data?.data === 'string' && data.data.startsWith('http')) {
       return data.data.trim();
     }
@@ -107,7 +106,6 @@ async function sendTelegram(product, info, heading) {
   const price = Number(info.price) || 0;
   const mrp = Number(info.mrp) || 0;
 
-  // Convert Flipkart URL to EarnKaro Affiliate Link before posting
   const affiliateUrl = await convertToEarnKaro(product.url);
 
   const mrpPart = mrp > price && price > 0 ? ` (MRP: ~₹${mrp.toLocaleString('en-IN')}~)` : '';
@@ -169,7 +167,6 @@ function extractFromHtml(html, targetPid) {
   let inStock = null;
   const offersList = [];
 
-  // 1A. Schema.org application/ld+json (Main Product Only)
   $('script[type="application/ld+json"]').each((_, el) => {
     try {
       const raw = $(el).html();
@@ -196,7 +193,6 @@ function extractFromHtml(html, targetPid) {
     } catch (e) {}
   });
 
-  // 1B. Title, Price, MRP & Image Selectors
   const titleSelectors = ['span.VU-ZEz', 'span.B_NuCI', 'h1._6EBuvT span', 'h1'];
   for (const sel of titleSelectors) {
     const t = $(sel).first().text().trim();
@@ -232,14 +228,7 @@ function extractFromHtml(html, targetPid) {
     if (imgSrc && imgSrc.startsWith('http')) image = imgSrc;
   }
 
-  // 1C. Hidden Offers, Applied Coupons & Special Offers Extractor
-  const offerSelectors = [
-    'li.kF1m4z',
-    'li._16eBzU',
-    'div.cPHDOP span',
-    'div._3TT44I',
-    'span.ynXjOy'
-  ];
+  const offerSelectors = ['li.kF1m4z', 'li._16eBzU', 'div.cPHDOP span', 'div._3TT44I', 'span.ynXjOy'];
   for (const sel of offerSelectors) {
     $(sel).each((_, el) => {
       let txt = $(el).text().replace(/\s+/g, ' ').trim();
@@ -260,7 +249,6 @@ function extractFromHtml(html, targetPid) {
     });
   }
 
-  // Catch inline coupon badges like "₹40 off applied for you"
   const couponMatch = $('body').text().match(/(₹\s*\d+\s*off\s*(?:applied|with coupon|extra)[^.\n]{0,45})/i);
   if (couponMatch && couponMatch[1]) {
     const cText = couponMatch[1].replace(/\s+/g, ' ').trim();
@@ -269,7 +257,6 @@ function extractFromHtml(html, targetPid) {
     }
   }
 
-  // 1D. Stock Detection
   const bodyText = $('body').text();
   const hasBuyBtn =
     $('button:contains("Buy Now")').length > 0 ||
@@ -287,7 +274,6 @@ function extractFromHtml(html, targetPid) {
   if (hasOosText) inStock = false;
   else if (hasBuyBtn) inStock = true;
 
-  // 1E. Embedded window.__INITIAL_STATE__ JSON (PID Locked)
   const stateMatch = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});\s*<\/script>/);
   if (stateMatch && stateMatch[1]) {
     try {
@@ -319,7 +305,6 @@ async function fetchProductHybrid(product) {
   const u = new URL(product.url);
   const pid = product.pid || u.searchParams.get('pid');
 
-  // Step 1: Fast Direct Try
   try {
     const directRes = await axios.get(product.url, {
       headers: {
@@ -347,7 +332,6 @@ async function fetchProductHybrid(product) {
     }
   } catch (e) {}
 
-  // Step 2: ScraperAPI Indian Residential IP (country_code=in)
   if (SCRAPER_API_KEY) {
     try {
       const proxyUrl = `https://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&country_code=in&url=${encodeURIComponent(product.url)}`;
@@ -376,7 +360,6 @@ async function fetchProductHybrid(product) {
   return { ok: false, error: 'Retrying in next cycle' };
 }
 
-// Safe Supabase Update
 async function safeUpdateProduct(id, updates) {
   const { error } = await supabase.from('tracked_products').update(updates).eq('id', id);
   if (error) {
@@ -439,10 +422,6 @@ async function checkAllProducts() {
         updates.name = res.title;
       }
 
-      // CONTINUOUS RE-ARM LOGIC:
-      // 1. Out of stock resets alert_sent = false
-      // 2. Price going above target_price resets alert_sent = false
-      // So whenever stock comes back OR price drops again, it triggers EVERY time!
       if (!res.inStock) {
         updates.status = 'OUT_OF_STOCK';
         updates.alert_sent = false;
@@ -461,10 +440,9 @@ async function checkAllProducts() {
             }
           } else {
             updates.status = 'WAITING_PRICE';
-            updates.alert_sent = false; // Re-armed! Will trigger again as soon as price drops <= targetP
+            updates.alert_sent = false;
           }
         } else {
-          // STOCK MODE
           updates.status = 'IN_STOCK';
           if (!p.alert_sent) {
             updates.alert_sent = true;
@@ -491,7 +469,7 @@ async function checkAllProducts() {
 setInterval(checkAllProducts, CHECK_INTERVAL_SEC * 1000);
 
 // =========================================================================
-// CLEAN DASHBOARD UI (STOCK + TARGET PRICE + HIDDEN OFFERS + EARNKARO)
+// CLEAN BUG-FREE DASHBOARD HTML (NO NESTED TEMPLATE LITERALS)
 // =========================================================================
 const HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -507,24 +485,24 @@ const HTML = `<!DOCTYPE html>
       <div>
         <div class="flex items-center gap-2.5 flex-wrap">
           <span class="h-3 w-3 rounded-full bg-emerald-500 animate-pulse"></span>
-          <h1 class="text-2xl font-bold text-blue-400">Flipkart Sniper 24×7</h1>
+          <h1 class="text-xl md:text-2xl font-bold text-blue-400">Flipkart Sniper 24×7</h1>
           <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">EarnKaro Auto-Link Active</span>
         </div>
         <p class="text-xs text-slate-400 mt-1">Continuous Stock & Target Price Monitoring • Hidden Coupons • Auto EarnKaro Telegram Post</p>
       </div>
-      <div class="flex gap-2">
-        <button onclick="forceCheck()" id="scanBtn" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg text-sm font-medium cursor-pointer">Scan Now</button>
-        <button onclick="testTg()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg text-sm font-medium cursor-pointer">Test Telegram + EarnKaro</button>
-        <button onclick="logout()" class="bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-lg text-sm cursor-pointer">Logout</button>
+      <div class="flex flex-wrap gap-2">
+        <button type="button" onclick="forceCheck()" id="scanBtn" class="bg-blue-600 hover:bg-blue-500 px-3 py-2 rounded-lg text-xs md:text-sm font-medium cursor-pointer">Scan Now</button>
+        <button type="button" onclick="testTg()" id="testBtn" class="bg-emerald-600 hover:bg-emerald-500 px-3 py-2 rounded-lg text-xs md:text-sm font-medium cursor-pointer">Test Telegram + EarnKaro</button>
+        <button type="button" onclick="logout()" class="bg-slate-800 hover:bg-slate-700 px-3 py-2 rounded-lg text-xs md:text-sm cursor-pointer">Logout</button>
       </div>
     </div>
 
     <!-- Login Box -->
-    <div id="loginBox" class="max-w-sm mx-auto bg-slate-900 border border-slate-800 rounded-xl p-6 mt-12 hidden">
+    <div id="loginBox" class="max-w-sm mx-auto bg-slate-900 border border-slate-800 rounded-xl p-6 mt-10">
       <h2 class="text-lg font-semibold mb-1">Admin Login</h2>
-      <p class="text-xs text-slate-400 mb-3">Password: <code class="text-blue-400">admin123</code></p>
-      <input type="password" id="pwd" placeholder="Enter Password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm mb-3" />
-      <button onclick="doLogin()" class="w-full bg-blue-600 hover:bg-blue-500 py-2.5 rounded-lg text-sm font-medium cursor-pointer">Login</button>
+      <p class="text-xs text-slate-400 mb-3">Default Password: <code class="text-blue-400">admin123</code></p>
+      <input type="password" id="pwd" placeholder="Enter Password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm mb-3 text-white" />
+      <button type="button" onclick="doLogin()" class="w-full bg-blue-600 hover:bg-blue-500 py-2.5 rounded-lg text-sm font-medium cursor-pointer">Login</button>
       <p id="loginErr" class="text-rose-400 text-xs mt-2"></p>
     </div>
 
@@ -535,275 +513,4 @@ const HTML = `<!DOCTYPE html>
         <form id="addForm" class="grid grid-cols-1 md:grid-cols-12 gap-3">
           <div class="md:col-span-6">
             <label class="text-xs text-slate-400">Flipkart Product Link *</label>
-            <input type="url" id="url" required placeholder="https://www.flipkart.com/..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1" />
-          </div>
-          <div class="md:col-span-2">
-            <label class="text-xs text-slate-400">Pin Code *</label>
-            <input type="text" id="pincode" required maxlength="6" pattern="[0-9]{6}" value="462023" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1" />
-          </div>
-          <div class="md:col-span-4">
-            <label class="text-xs text-slate-400">Alert Condition *</label>
-            <select id="mode" onchange="toggleInputs()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1">
-              <option value="STOCK">1. Stock Alert (Stock Aane Par)</option>
-              <option value="PRICE">2. Target Price (₹ Kam Hone Par)</option>
-            </select>
-          </div>
-          <div id="priceDiv" class="md:col-span-4 hidden">
-            <label class="text-xs text-emerald-400">Target Max Price (₹) *</label>
-            <input type="number" id="targetPrice" min="1" placeholder="e.g. 800 (₹800 ya niche aane par)" class="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-sm mt-1" />
-          </div>
-          <div id="nameDiv" class="md:col-span-12">
-            <label class="text-xs text-slate-400">Product Name (Optional - Auto Detect Hoga)</label>
-            <input type="text" id="name" placeholder="Auto detect from Flipkart" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm mt-1" />
-          </div>
-          <div class="md:col-span-12 flex justify-end">
-            <button type="submit" class="bg-blue-600 hover:bg-blue-500 px-6 py-2.5 rounded-lg text-sm font-medium cursor-pointer">Tracking List Mein Jodein</button>
-          </div>
-        </form>
-      </div>
-
-      <div class="flex items-center justify-between mb-3">
-        <h2 class="text-base font-semibold text-slate-200">Active Tracking List (Auto-Refreshing Every 8s)</h2>
-        <button onclick="loadList()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded cursor-pointer">Refresh List</button>
-      </div>
-      <div id="list" class="space-y-3"></div>
-    </div>
-  </div>
-
-  <script>
-    let token = localStorage.getItem('fk_pass') || '';
-
-    function toggleInputs() {
-      const m = document.getElementById('mode').value;
-      const pDiv = document.getElementById('priceDiv');
-      const pIn = document.getElementById('targetPrice');
-
-      pDiv.classList.toggle('hidden', m !== 'PRICE');
-      pIn.required = (m === 'PRICE');
-      document.getElementById('nameDiv').className = m === 'STOCK' ? 'md:col-span-12' : 'md:col-span-8';
-    }
-
-    async function api(url, opts = {}) {
-      opts.headers = { ...(opts.headers || {}), 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
-      return fetch(url, opts);
-    }
-
-    async function doLogin() {
-      token = document.getElementById('pwd').value;
-      const res = await api('/api/products');
-      if (res.ok) {
-        localStorage.setItem('fk_pass', token);
-        document.getElementById('loginBox').classList.add('hidden');
-        document.getElementById('appBox').classList.remove('hidden');
-        loadList();
-      } else {
-        document.getElementById('loginErr').innerText = 'Wrong Password! (Default: admin123)';
-      }
-    }
-
-    function logout() {
-      localStorage.removeItem('fk_pass');
-      location.reload();
-    }
-
-    async function forceCheck() {
-      const btn = document.getElementById('scanBtn');
-      btn.innerText = 'Scanning...';
-      await api('/api/scan-now', { method: 'POST' });
-      setTimeout(() => { btn.innerText = 'Scan Now'; loadList(); }, 5000);
-    }
-
-    async function loadList() {
-      const res = await api('/api/products');
-      if (!res.ok) {
-        document.getElementById('loginBox').classList.remove('hidden');
-        return;
-      }
-      document.getElementById('appBox').classList.remove('hidden');
-      const items = await res.json();
-      const box = document.getElementById('list');
-      if (!items.length) {
-        box.innerHTML = '<div class="text-center py-8 text-slate-500 text-sm bg-slate-900 border border-slate-800 rounded-xl">Abhi koi product add nahi hai. Upar link aur pincode daal kar add karein.</div>';
-        return;
-      }
-      box.innerHTML = items.map(p => {
-        let statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">' + p.status + '</span>';
-        if (p.status === 'IN_STOCK' || p.status === 'PRICE_HIT') {
-          statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-semibold">' + p.status + ' ✅</span>';
-        } else if (p.status === 'OUT_OF_STOCK') {
-          statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30">OUT OF STOCK</span>';
-        } else if (p.status === 'WAITING_PRICE') {
-          statusBadge = '<span class="px-2.5 py-0.5 text-xs rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">In Stock (Waiting ≤ ₹' + p.target_price + ')</span>';
-        }
-
-        let targetTag = '<span class="px-2 py-0.5 text-xs rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">Mode: Stock Alert</span>';
-        if (p.mode === 'PRICE') {
-          targetTag = '<span class="px-2 py-0.5 text-xs rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">Target Price: ≤ ₹' + p.target_price + '</span>';
-        }
-
-        const thumb = p.image_url
-          ? '<img src="' + p.image_url + '" class="w-14 h-14 object-contain bg-white rounded-lg p-1 shrink-0" />'
-          : '<div class="w-14 h-14 bg-slate-800 rounded-lg flex items-center justify-center text-xs text-slate-500 shrink-0">FK</div>';
-
-        const offersHtml = p.offers_text
-          ? '<div class="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-2.5 py-1 mt-1.5">🎁 <b>Offers:</b> ' + p.offers_text + '</div>'
-          : '';
-
-        const errLine = p.error_message
-          ? '<div class="text-xs text-rose-400 mt-1">⚠️ ' + p.error_message + '</div>'
-          : '';
-
-        return \`
-          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-            <div class="flex items-start gap-3.5">
-              \${thumb}
-              <div class="space-y-1.5">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <a href="\${p.url}" target="_blank" class="font-semibold text-slate-100 hover:text-blue-400">\${p.name}</a>
-                  \${statusBadge}
-                  \${targetTag}
-                </div>
-                <div class="text-xs text-slate-400 flex flex-wrap gap-x-4 gap-y-1">
-                  <span>📍 PIN: <b class="text-slate-200">\${p.pincode}</b></span>
-                  <span>💰 Live Price: <b class="text-slate-100">\${p.last_price ? '₹' + Number(p.last_price).toLocaleString('en-IN') : '-'}</b></span>
-                  <span>🏷️ MRP: <b class="text-slate-400">\${p.last_mrp ? '₹' + Number(p.last_mrp).toLocaleString('en-IN') : '-'}</b></span>
-                  <span>📉 Lowest: <b class="text-blue-300">\${p.lowest_price ? '₹' + Number(p.lowest_price).toLocaleString('en-IN') : '-'}</b></span>
-                  <span>🕒 \${p.last_checked_at ? new Date(p.last_checked_at).toLocaleTimeString('en-IN') : 'Checking...'}</span>
-                </div>
-                \${offersHtml}
-                \${errLine}
-              </div>
-            </div>
-            <div class="flex items-center gap-2 shrink-0 self-end md:self-center">
-              <button onclick="toggleItem('\${p.id}', \${!p.active})" class="px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 cursor-pointer">\${p.active ? 'Pause' : 'Resume'}</button>
-              <button onclick="delItem('\${p.id}')" class="px-3 py-1.5 text-xs rounded bg-rose-950 text-rose-300 border border-rose-800/40 cursor-pointer">Delete</button>
-            </div>
-          </div>
-        \`;
-      }).join('');
-    }
-
-    document.getElementById('addForm').addEventListener('submit', async e => {
-      e.preventDefault();
-      const body = {
-        url: document.getElementById('url').value,
-        pincode: document.getElementById('pincode').value,
-        mode: document.getElementById('mode').value,
-        targetPrice: document.getElementById('targetPrice').value,
-        name: document.getElementById('name').value
-      };
-      const res = await api('/api/products', { method: 'POST', body: JSON.stringify(body) });
-      if (res.ok) {
-        document.getElementById('url').value = '';
-        document.getElementById('name').value = '';
-        document.getElementById('targetPrice').value = '';
-        setTimeout(loadList, 4000);
-        loadList();
-      } else {
-        const d = await res.json();
-        alert(d.error || 'Error adding product');
-      }
-    });
-
-    async function toggleItem(id, active) {
-      await api('/api/products/' + id, { method: 'PATCH', body: JSON.stringify({ active }) });
-      loadList();
-    }
-
-    async function delItem(id) {
-      await api('/api/products/' + id, { method: 'DELETE' });
-      loadList();
-    }
-
-    async function testTg() {
-      const res = await api('/api/test-telegram', { method: 'POST' });
-      const d = await res.json();
-      alert(res.ok ? '✅ Telegram Deal Card Sent with EarnKaro Link!\nLink: ' + (d.affiliateUrl || '') : '❌ Failed');
-    }
-
-    if (token) loadList();
-    else document.getElementById('loginBox').classList.remove('hidden');
-    setInterval(() => { if (token) loadList(); }, 8000);
-  </script>
-</body>
-</html>`;
-
-// =========================================================================
-// API ROUTES
-// =========================================================================
-app.get('/', (req, res) => res.type('html').send(HTML));
-app.get('/ping', (req, res) => res.send('OK - Sniper + EarnKaro 24x7 Active'));
-
-app.get('/api/products', checkAuth, async (req, res) => {
-  const { data, error } = await supabase.from('tracked_products').select('*').order('created_at', { ascending: false });
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
-});
-
-app.post('/api/scan-now', checkAuth, async (req, res) => {
-  checkAllProducts();
-  res.json({ started: true });
-});
-
-app.post('/api/products', checkAuth, async (req, res) => {
-  const { url, pincode, mode, targetPrice, name } = req.body;
-  const parsed = cleanFlipkartUrl(url);
-  if (!parsed || !parsed.clean.includes('flipkart.com')) {
-    return res.status(400).json({ error: 'Sahi Flipkart product link dalein' });
-  }
-  if (!/^\d{6}$/.test(String(pincode).trim())) {
-    return res.status(400).json({ error: 'Sahi 6-digit Pincode dalein' });
-  }
-
-  const validMode = mode === 'PRICE' ? 'PRICE' : 'STOCK';
-
-  const { error } = await supabase.from('tracked_products').insert([{
-    name: name?.trim() || 'Flipkart Product',
-    url: parsed.clean,
-    pid: parsed.pid || null,
-    lid: parsed.lid || null,
-    pincode: String(pincode).trim(),
-    mode: validMode,
-    target_price: validMode === 'PRICE' ? Number(targetPrice) : null,
-    status: 'CHECKING',
-    alert_sent: false,
-    active: true
-  }]);
-
-  if (error) return res.status(500).json({ error: error.message });
-  checkAllProducts();
-  res.json({ success: true });
-});
-
-app.patch('/api/products/:id', checkAuth, async (req, res) => {
-  await supabase.from('tracked_products').update({
-    active: req.body.active,
-    alert_sent: false,
-    status: req.body.active ? 'CHECKING' : 'PAUSED'
-  }).eq('id', req.params.id);
-  res.json({ success: true });
-});
-
-app.delete('/api/products/:id', checkAuth, async (req, res) => {
-  await supabase.from('tracked_products').delete().eq('id', req.params.id);
-  res.json({ success: true });
-});
-
-app.post('/api/test-telegram', checkAuth, async (req, res) => {
-  const r = await sendTelegram(
-    { name: 'Test Product', pincode: '462023', url: 'https://www.flipkart.com/apple-iphone-17-lavender-256-gb/p/itm6eb39da622cdd?pid=MOBHFN6YKGBPYJZD' },
-    {
-      title: 'Apple iPhone 17 (Lavender, 256 GB)',
-      price: 82900,
-      mrp: 89900,
-      offers: ['🎟️ Coupon: ₹4000 Instant Bank Discount', 'Special Price: Get extra ₹3000 off']
-    },
-    'EARNKARO + SNIPER BOT TEST!'
-  );
-  res.status(r.ok ? 200 : 500).json(r);
-});
-
-app.listen(PORT, () => {
-  console.log(`🚀 Flipkart Sniper + EarnKaro Live on Port ${PORT}`);
-  checkAllProducts();
-});
+            <input type="url" id="url" required plac
