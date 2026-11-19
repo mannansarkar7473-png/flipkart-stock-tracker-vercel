@@ -6,13 +6,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // =========================================================================
-// PRE-CONFIGURED CREDENTIALS (Direct Ready - No Env Setup Required)
+// PRE-CONFIGURED CREDENTIALS
 // =========================================================================
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://vpqhayqkovxerxertwuv.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZwcWhheXFrb3Z4ZXJ4ZXJ0d3V2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUwNzI1MzYsImV4cCI6MjExMDY0ODUzNn0.3vAnKw1pzzVMt4MWmKIh82Qgghkf_6rL9EtDD0W-ZOc';
 const BOT_TOKEN = process.env.BOT_TOKEN || '9242430164:AAEAAIcATBMTKDgTevoef5TekjniPP-7dSI';
 const CHAT_ID = process.env.CHAT_ID || '-1004305890096';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Mamun991@';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const CHECK_INTERVAL_SEC = 35;
 // =========================================================================
 
@@ -36,7 +36,7 @@ async function refreshCookies() {
   try {
     const res = await axios.get('https://www.flipkart.com/', {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8'
       },
@@ -61,34 +61,61 @@ function cleanFlipkartUrl(rawUrl) {
     if (pid) q.push(`pid=${pid}`);
     if (lid) q.push(`lid=${lid}`);
     if (q.length) clean += `?${q.join('&')}`;
-    return { clean, pid };
+    return { clean, pid, lid };
   } catch {
     return null;
   }
 }
 
+// =========================================================================
+// RICH TELEGRAM ALERT (WITH PRODUCT PHOTO & DIRECT INLINE BUY BUTTON)
+// =========================================================================
 async function sendTelegram(product, info, heading) {
   const title = (info.title || product.name || 'Flipkart Product').replace(/[*_`\[\]()]/g, '');
-  const mrpPart = info.mrp && info.price && info.mrp > info.price
-    ? ` (MRP: ~₹${Number(info.mrp).toLocaleString('en-IN')}~)`
-    : '';
-  const discPart = info.discount > 0 ? `🏷️ *Live Discount:* ${info.discount}% OFF\n` : '';
-  const priceText = info.price ? `₹${Number(info.price).toLocaleString('en-IN')}` : 'Check Link';
+  const price = Number(info.price) || 0;
+  const mrp = Number(info.mrp) || 0;
+  const savings = mrp > price && price > 0 ? mrp - price : 0;
 
-  const text =
+  const mrpPart = mrp > price && price > 0 ? ` (MRP: ~₹${mrp.toLocaleString('en-IN')}~)` : '';
+  const discPart = info.discount > 0
+    ? `🏷️ *Discount:* ${info.discount}% OFF${savings > 0 ? ` (Save ₹${savings.toLocaleString('en-IN')})` : ''}\n`
+    : '';
+  const priceText = price > 0 ? `₹${price.toLocaleString('en-IN')}` : 'Check Link';
+
+  const caption =
     `🚨 *${heading}* 🚨\n\n` +
     `📦 *Product:* ${title}\n` +
-    `📍 *Pin Code:* \`${product.pincode}\` (Available ✅)\n` +
+    `📍 *Pin Code:* \`${product.pincode}\` (Deliverable ✅)\n` +
     `💰 *Live Price:* ${priceText}${mrpPart}\n` +
     discPart +
-    `\n👉 [YAHAN CLICK KAREIN AUR TURANT BUY KAREIN](${product.url})`;
+    `\n⚡ _Jaldi order karein, stock/offer kabhi bhi khatam ho sakta hai!_`;
+
+  const replyMarkup = {
+    inline_keyboard: [[{ text: '🛒 BUY NOW ON FLIPKART', url: product.url }]]
+  };
+
+  try {
+    if (info.image && info.image.startsWith('http')) {
+      const r = await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`, {
+        chat_id: CHAT_ID,
+        photo: info.image,
+        caption,
+        parse_mode: 'Markdown',
+        reply_markup: replyMarkup
+      }, { timeout: 12000 });
+      if (r.data?.ok) return { ok: true };
+    }
+  } catch (e) {
+    // Fallback to sendMessage if photo URL fails
+  }
 
   try {
     const r = await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       chat_id: CHAT_ID,
-      text,
+      text: caption,
       parse_mode: 'Markdown',
-      disable_web_page_preview: false
+      disable_web_page_preview: false,
+      reply_markup: replyMarkup
     }, { timeout: 10000 });
     return { ok: Boolean(r.data?.ok) };
   } catch (err) {
@@ -98,9 +125,61 @@ async function sendTelegram(product, info, heading) {
 }
 
 // =========================================================================
-// FLIPKART 3-LAYER UNIVERSAL EXTRACTOR
+// LAYER 1: HTML SCHEMA.ORG (ld+json) & INITIAL_STATE VERIFIER
 // =========================================================================
-function parseFlipkartResponse(data, targetPid) {
+async function fetchHtmlSchema(productUrl, cookies) {
+  try {
+    const res = await axios.get(productUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-IN,en-GB;q=0.9,en;q=0.8',
+        ...(cookies ? { Cookie: cookies } : {})
+      },
+      timeout: 14000
+    });
+
+    const html = String(res.data || '');
+    let title = null;
+    let price = null;
+    let image = null;
+    let schemaInStock = null;
+
+    // Extract application/ld+json Product Schema (100% Main Product, Zero Ads)
+    const ldMatches = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
+    for (const block of ldMatches) {
+      try {
+        const cleanJson = block.replace(/<script[^>]*>|<\/script>/gi, '').trim();
+        const parsed = JSON.parse(cleanJson);
+        const items = Array.isArray(parsed) ? parsed : [parsed];
+        for (const item of items) {
+          if (item['@type'] === 'Product') {
+            if (item.name) title = item.name;
+            if (item.image) image = Array.isArray(item.image) ? item.image[0] : item.image;
+            const offers = Array.isArray(item.offers) ? item.offers[0] : item.offers;
+            if (offers) {
+              if (offers.price) price = Number(offers.price);
+              if (offers.availability) {
+                const av = String(offers.availability);
+                if (av.includes('InStock')) schemaInStock = true;
+                else if (av.includes('OutOfStock')) schemaInStock = false;
+              }
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    return { title, price, image, schemaInStock };
+  } catch (e) {
+    return { title: null, price: null, image: null, schemaInStock: null };
+  }
+}
+
+// =========================================================================
+// LAYER 2: STRICT PID-LOCKED FLIPKART API PARSER (PINCODE + MRP + STOCK)
+// =========================================================================
+function parseFlipkartApiStrict(data, targetPid, targetLid) {
   let inStock = false;
   let oosExplicit = false;
   let foundSignal = false;
@@ -108,61 +187,76 @@ function parseFlipkartResponse(data, targetPid) {
   let price = null;
   let mrp = null;
   let discount = 0;
+  let image = null;
 
-  // Layer 1: Primary pageContext & trackingDataV2
+  // 1. Primary Page Context (Guaranteed Main Product Metadata)
   const pageCtx = data?.RESPONSE?.pageData?.pageContext;
   if (pageCtx) {
-    if (pageCtx.titles?.title) title = pageCtx.titles.title;
-    if (pageCtx.pricing) {
-      const p = pageCtx.pricing;
-      if (!price) price = Number(p.finalPrice?.value || p.specialPrice?.value || p.price?.value || 0) || null;
-      if (!mrp && p.mrp?.value) mrp = Number(p.mrp.value);
-      if (!discount && (p.totalDiscount || p.discount)) discount = Number(p.totalDiscount || p.discount);
-      if (Array.isArray(p.prices)) {
-        for (const pr of p.prices) {
-          if ((pr.priceType === 'FSP' || pr.priceType === 'SPECIAL_PRICE') && pr.value && !price) price = Number(pr.value);
-          if (pr.priceType === 'MRP' && pr.value && !mrp) mrp = Number(pr.value);
-          if (pr.discount && !discount) discount = Number(pr.discount);
+    const ctxPid = pageCtx.productId || pageCtx.trackingDataV2?.productId;
+    if (!targetPid || !ctxPid || ctxPid === targetPid) {
+      if (pageCtx.titles?.title) title = pageCtx.titles.title;
+      if (pageCtx.imageUrl) {
+        image = pageCtx.imageUrl.replace('{@width}', '416').replace('{@height}', '416').replace('{@quality}', '70');
+      }
+      if (pageCtx.pricing) {
+        const p = pageCtx.pricing;
+        price = Number(p.finalPrice?.value || p.specialPrice?.value || p.price?.value || 0) || null;
+        if (p.mrp?.value) mrp = Number(p.mrp.value);
+        if (p.totalDiscount || p.discount) discount = Number(p.totalDiscount || p.discount);
+        if (Array.isArray(p.prices)) {
+          for (const pr of p.prices) {
+            if ((pr.priceType === 'FSP' || pr.priceType === 'SPECIAL_PRICE') && pr.value && !price) price = Number(pr.value);
+            if (pr.priceType === 'MRP' && pr.value && !mrp) mrp = Number(pr.value);
+            if (pr.discount && !discount) discount = Number(pr.discount);
+          }
         }
       }
-    }
-    const td = pageCtx.trackingDataV2;
-    if (td) {
-      if (!price && td.sellingPrice) price = Number(td.sellingPrice);
-      if (!mrp && td.mrp) mrp = Number(td.mrp);
-      if (!discount && td.discount) discount = Number(td.discount);
-      if (td.productStatus) {
-        const st = String(td.productStatus).toUpperCase();
-        if (st.includes('OUT_OF_STOCK') || st.includes('SOLD_OUT') || st.includes('NOT_AVAILABLE')) {
-          oosExplicit = true;
-          foundSignal = true;
-        } else if (st.includes('IN_STOCK') || st.includes('AVAILABLE')) {
-          inStock = true;
-          foundSignal = true;
+      const td = pageCtx.trackingDataV2;
+      if (td) {
+        if (!price && td.sellingPrice) price = Number(td.sellingPrice);
+        if (!mrp && td.mrp) mrp = Number(td.mrp);
+        if (!discount && td.discount) discount = Number(td.discount);
+        if (td.productStatus) {
+          const st = String(td.productStatus).toUpperCase();
+          if (st.includes('OUT_OF_STOCK') || st.includes('SOLD_OUT') || st.includes('NOT_AVAILABLE')) {
+            oosExplicit = true;
+            foundSignal = true;
+          } else if (st.includes('IN_STOCK') || st.includes('AVAILABLE')) {
+            inStock = true;
+            foundSignal = true;
+          }
         }
       }
     }
   }
 
-  // Layer 2: Main Product Slots Scanner (Ignores Ads & Similar Items)
+  // 2. Strict PID-Locked Slot Scanner (Ignores Chargers, Variants, Ads & Similar Items)
   const slots = data?.RESPONSE?.slots;
   if (Array.isArray(slots)) {
     for (const slot of slots) {
       const w = slot?.widget;
       if (!w || !w.data) continue;
       const wType = String(w.type || '').toUpperCase();
+
+      // Strictly skip non-primary widgets
       if (
         wType.includes('AD') ||
         wType.includes('SIMILAR') ||
         wType.includes('RECOMMEND') ||
         wType.includes('CROSS_SELL') ||
+        wType.includes('BOUGHT_TOGETHER') ||
         wType.includes('BANNER') ||
-        wType.includes('RECENTLY')
+        wType.includes('RECENTLY') ||
+        wType.includes('SWATCH')
       ) continue;
 
-      function scan(node, depth = 0) {
-        if (!node || typeof node !== 'object' || depth > 22) return;
+      function scanStrict(node, depth = 0) {
+        if (!node || typeof node !== 'object' || depth > 18) return;
+
+        // STRICT TARGET LOCK: If node belongs to a different productId or listingId, abort branch immediately!
         if (targetPid && node.productId && node.productId !== targetPid) return;
+        if (targetPid && node.pid && node.pid !== targetPid) return;
+        if (targetLid && node.listingId && node.listingId !== targetLid) return;
 
         if (!title && node.titles && typeof node.titles.title === 'string') {
           title = node.titles.title;
@@ -184,13 +278,20 @@ function parseFlipkartResponse(data, targetPid) {
         if (node.priceType === 'FSP' && node.value && !price) price = Number(node.value);
         if (node.priceType === 'MRP' && node.value && !mrp) mrp = Number(node.value);
 
-        if (node.action?.type === 'BUY_NOW' || node.action?.type === 'ADD_TO_CART') {
-          inStock = true;
-          foundSignal = true;
-        } else if (node.action?.type === 'NOTIFY_ME') {
-          oosExplicit = true;
-          foundSignal = true;
+        // Action buttons locked to targetPid
+        if (node.action && typeof node.action === 'object') {
+          const btnPid = node.action.params?.productId || node.action.params?.pid;
+          if (!targetPid || !btnPid || btnPid === targetPid) {
+            if (node.action.type === 'BUY_NOW' || node.action.type === 'ADD_TO_CART') {
+              inStock = true;
+              foundSignal = true;
+            } else if (node.action.type === 'NOTIFY_ME') {
+              oosExplicit = true;
+              foundSignal = true;
+            }
+          }
         }
+
         if (node.availabilityStatus === 'IN_STOCK') {
           inStock = true;
           foundSignal = true;
@@ -199,108 +300,141 @@ function parseFlipkartResponse(data, targetPid) {
           foundSignal = true;
         }
 
-        if (Array.isArray(node)) node.forEach(x => scan(x, depth + 1));
-        else Object.keys(node).forEach(k => scan(node[k], depth + 1));
+        if (Array.isArray(node)) node.forEach(x => scanStrict(x, depth + 1));
+        else Object.keys(node).forEach(k => scanStrict(node[k], depth + 1));
       }
-      scan(w);
-    }
-  }
 
-  // Exact discount calculation from MRP & Selling Price
-  if (mrp && price && mrp > price) {
-    const calc = Math.round(((mrp - price) / mrp) * 100);
-    if (calc > 0) discount = calc;
+      scanStrict(w);
+    }
   }
 
   return {
     inStock: inStock && !oosExplicit,
-    foundSignal: foundSignal || oosExplicit || price !== null,
+    oosExplicit,
+    foundSignal,
     title,
     price,
     mrp,
-    discount
+    discount,
+    image
   };
 }
 
-async function fetchProductLive(product) {
+// =========================================================================
+// DUAL-SOURCE MERGER (Combines Schema.org + PID-Locked API for 100% Accuracy)
+// =========================================================================
+async function fetchProductSniper(product) {
   const cookies = await refreshCookies();
   const u = new URL(product.url);
-  const pid = u.searchParams.get('pid');
+  const pid = product.pid || u.searchParams.get('pid');
+  const lid = product.lid || u.searchParams.get('lid');
   const pageUri = u.pathname + u.search;
 
-  const endpoints = [
-    {
-      url: 'https://2.rome.api.flipkart.com/api/4/page/fetch',
-      ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
-      xua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 FKUA/msite/0.0.3/msite/Mobile'
-    },
-    {
-      url: 'https://1.rome.api.flipkart.com/api/4/page/fetch',
-      ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      xua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 FKUA/website/42/website/Desktop'
-    }
-  ];
-
-  for (const ep of endpoints) {
-    try {
-      const res = await axios.post(
-        ep.url,
-        { pageUri, locationContext: { pincode: String(product.pincode) }, isReloadRequest: true },
-        {
-          headers: {
-            'User-Agent': ep.ua,
-            'X-User-Agent': ep.xua,
-            'Content-Type': 'application/json',
-            'Origin': 'https://www.flipkart.com',
-            'Referer': 'https://www.flipkart.com/',
-            ...(cookies ? { Cookie: cookies } : {})
-          },
-          timeout: 15000
-        }
-      );
-
-      const parsed = parseFlipkartResponse(res.data, pid);
-
-      // Layer 3: Raw action signal fallback
-      if (!parsed.foundSignal) {
-        const raw = JSON.stringify(res.data);
-        const buy = raw.includes('"type":"BUY_NOW"') || raw.includes('"type":"ADD_TO_CART"');
-        const notify = raw.includes('"type":"NOTIFY_ME"');
-        if (buy || notify) {
-          parsed.inStock = buy && !notify;
-          parsed.foundSignal = true;
-        }
+  // Run API & HTML Schema checks in parallel for speed + dual accuracy
+  const apiPromise = (async () => {
+    const endpoints = [
+      {
+        url: 'https://2.rome.api.flipkart.com/api/4/page/fetch',
+        ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+        xua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 FKUA/msite/0.0.3/msite/Mobile'
+      },
+      {
+        url: 'https://1.rome.api.flipkart.com/api/4/page/fetch',
+        ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        xua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 FKUA/website/42/website/Desktop'
       }
+    ];
 
-      if (parsed.foundSignal) {
-        return { ok: true, ...parsed };
+    for (const ep of endpoints) {
+      try {
+        const res = await axios.post(
+          ep.url,
+          { pageUri, locationContext: { pincode: String(product.pincode) }, isReloadRequest: true },
+          {
+            headers: {
+              'User-Agent': ep.ua,
+              'X-User-Agent': ep.xua,
+              'Content-Type': 'application/json',
+              'Origin': 'https://www.flipkart.com',
+              'Referer': 'https://www.flipkart.com/',
+              ...(cookies ? { Cookie: cookies } : {})
+            },
+            timeout: 14000
+          }
+        );
+        const parsed = parseFlipkartApiStrict(res.data, pid, lid);
+        if (parsed.foundSignal || parsed.price) return parsed;
+      } catch (e) {
+        sessionCookies = '';
       }
-    } catch (err) {
-      sessionCookies = '';
     }
+    return null;
+  })();
+
+  const schemaPromise = fetchHtmlSchema(product.url, cookies);
+
+  const [apiData, schemaData] = await Promise.all([apiPromise, schemaPromise]);
+
+  if (!apiData && !schemaData?.price && schemaData?.schemaInStock === null) {
+    return { ok: false, error: 'Retrying in next cycle' };
   }
 
-  return { ok: false, error: 'Retrying in next cycle' };
+  // Merge with strict priority: Schema title/price prevents charger/accessory contamination!
+  const finalTitle = schemaData?.title || apiData?.title || null;
+  const finalPrice = schemaData?.price || apiData?.price || null;
+  const finalMrp = apiData?.mrp && (!finalPrice || apiData.mrp >= finalPrice) ? apiData.mrp : null;
+  const finalImage = schemaData?.image || apiData?.image || null;
+
+  let finalDiscount = apiData?.discount || 0;
+  if (finalMrp && finalPrice && finalMrp > finalPrice) {
+    finalDiscount = Math.round(((finalMrp - finalPrice) / finalMrp) * 100);
+  }
+
+  // Stock signal: API pincode result takes priority; fallback to Schema availability
+  let finalInStock = false;
+  let hasClearStock = false;
+
+  if (apiData && apiData.foundSignal) {
+    finalInStock = apiData.inStock;
+    hasClearStock = true;
+  } else if (schemaData && schemaData.schemaInStock !== null) {
+    finalInStock = schemaData.schemaInStock;
+    hasClearStock = true;
+  }
+
+  if (!hasClearStock) {
+    return { ok: false, error: 'Ambiguous stock signal, retrying' };
+  }
+
+  return {
+    ok: true,
+    inStock: finalInStock,
+    title: finalTitle,
+    price: finalPrice,
+    mrp: finalMrp,
+    discount: finalDiscount,
+    image: finalImage
+  };
 }
 
-// Safe Supabase Update (Never fails even if optional columns are missing)
+// Safe Supabase Update (Gracefully handles optional columns)
 async function safeUpdateProduct(id, updates) {
   const { error } = await supabase.from('tracked_products').update(updates).eq('id', id);
   if (error) {
-    const minimalUpdates = {
+    const fallback = {
       status: updates.status,
       last_price: updates.last_price,
       last_discount: updates.last_discount,
       alert_sent: updates.alert_sent,
       last_checked_at: updates.last_checked_at
     };
-    if (updates.name) minimalUpdates.name = updates.name;
-    await supabase.from('tracked_products').update(minimalUpdates).eq('id', id);
+    if (updates.name) fallback.name = updates.name;
+    await supabase.from('tracked_products').update(fallback).eq('id', id);
   }
 }
 
 // =========================================================================
-// 24x7 BACKGROUND CHECKER LOOP
+// 24x7 MULTI-PRODUCT QUEUE WORKER
 // =========================================================================
 let isRunning = false;
 async function checkAllProducts() {
@@ -316,7 +450,7 @@ async function checkAllProducts() {
     if (error || !products || products.length === 0) return;
 
     for (const p of products) {
-      const res = await fetchProductLive(p);
+      const res = await fetchProductSniper(p);
       const nowIso = new Date().toISOString();
 
       if (!res.ok) {
@@ -327,37 +461,43 @@ async function checkAllProducts() {
         continue;
       }
 
+      const livePrice = res.price || p.last_price || null;
+      const prevLowest = Number(p.lowest_price) || 0;
+      const newLowest = livePrice && (!prevLowest || livePrice < prevLowest) ? livePrice : prevLowest || livePrice;
+
       const updates = {
         last_checked_at: nowIso,
         error_message: null,
-        last_price: res.price || p.last_price,
+        last_price: livePrice,
         last_mrp: res.mrp || p.last_mrp,
+        lowest_price: newLowest,
         last_discount: res.discount || 0
       };
 
+      if (res.image && !p.image_url) updates.image_url = res.image;
       if (res.title && (!p.name || p.name === 'Flipkart Product')) {
         updates.name = res.title;
       }
 
       if (!res.inStock) {
         updates.status = 'OUT_OF_STOCK';
-        updates.alert_sent = false; // Rearm trigger for when stock comes back
+        updates.alert_sent = false; // Auto re-arm for stock arrival
       } else {
         if (p.mode === 'PRICE') {
           const targetP = Number(p.target_price) || 0;
-          if (res.price && res.price <= targetP) {
+          if (livePrice && livePrice <= targetP) {
             updates.status = 'PRICE_HIT';
             if (!p.alert_sent) {
               updates.alert_sent = true;
               await sendTelegram(
                 { ...p, ...updates },
                 res,
-                `PRICE DROP ALERT (₹${res.price.toLocaleString('en-IN')} ≤ ₹${targetP.toLocaleString('en-IN')})!`
+                `PRICE DROP ALERT (₹${livePrice.toLocaleString('en-IN')} ≤ ₹${targetP.toLocaleString('en-IN')})!`
               );
             }
           } else {
             updates.status = 'WAITING_PRICE';
-            updates.alert_sent = false;
+            updates.alert_sent = false; // Auto re-arm if price goes up and drops again
           }
         } else if (p.mode === 'DISCOUNT') {
           const targetD = Number(p.target_discount) || 0;
@@ -373,10 +513,10 @@ async function checkAllProducts() {
             }
           } else {
             updates.status = 'WAITING_DISCOUNT';
-            updates.alert_sent = false;
+            updates.alert_sent = false; // Auto re-arm if discount drops and rises again
           }
         } else {
-          // STOCK MODE: Instant alert whenever item is detected IN_STOCK (and alert_sent is false)
+          // STOCK MODE: Triggers as soon as product is IN_STOCK
           updates.status = 'IN_STOCK';
           if (!p.alert_sent) {
             updates.alert_sent = true;
@@ -390,8 +530,8 @@ async function checkAllProducts() {
       }
 
       await safeUpdateProduct(p.id, updates);
-      console.log(`🔍 [${p.pincode}] ${updates.name || p.name} | Status: ${updates.status} | Price: ₹${updates.last_price || '-'} | Disc: ${updates.last_discount}%`);
-      await new Promise(r => setTimeout(r, 4000));
+      console.log(`🎯 [${p.pincode}] ${updates.name || p.name} | ${updates.status} | Price: ₹${updates.last_price || '-'} | MRP: ₹${updates.last_mrp || '-'} | Disc: ${updates.last_discount}%`);
+      await new Promise(r => setTimeout(r, 3500));
     }
   } catch (e) {
     console.error('Loop error:', e.message);
@@ -403,25 +543,26 @@ async function checkAllProducts() {
 setInterval(checkAllProducts, CHECK_INTERVAL_SEC * 1000);
 
 // =========================================================================
-// COMPLETE DASHBOARD UI
+// SNIPER DASHBOARD UI (WITH THUMBNAIL, LOWEST PRICE & PID LOCK BADGE)
 // =========================================================================
 const HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Flipkart 24×7 Stock, Price & Discount Tracker</title>
+  <title>Flipkart Sniper 24×7 Tracker</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8">
-  <div class="max-w-4xl mx-auto">
+  <div class="max-w-5xl mx-auto">
     <div class="flex flex-wrap items-center justify-between gap-4 mb-6 border-b border-slate-800 pb-4">
       <div>
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2.5">
           <span class="h-3 w-3 rounded-full bg-emerald-500 animate-pulse"></span>
-          <h1 class="text-2xl font-bold text-blue-400">Flipkart 24×7 Stock, Price & Discount Tracker</h1>
+          <h1 class="text-2xl font-bold text-blue-400">Flipkart Sniper 24×7 Tracker</h1>
+          <span class="text-xs px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20">PID-Locked Dual Engine</span>
         </div>
-        <p class="text-xs text-slate-400 mt-1">Har 35 second mein live check • Stock, Price Drop & Discount % par instant Telegram Alert</p>
+        <p class="text-xs text-slate-400 mt-1">Har 35s mein live check • Exact Price, MRP, Discount % & Stock Arrival par Telegram Deal Card</p>
       </div>
       <div class="flex gap-2">
         <button onclick="testTg()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg text-sm font-medium cursor-pointer">Test Telegram</button>
@@ -432,8 +573,8 @@ const HTML = `<!DOCTYPE html>
     <!-- Login Box -->
     <div id="loginBox" class="max-w-sm mx-auto bg-slate-900 border border-slate-800 rounded-xl p-6 mt-12 hidden">
       <h2 class="text-lg font-semibold mb-1">Admin Login</h2>
-      <p class="text-xs text-slate-400 mb-3">Password: <code class="text-blue-400">admin123</code></p>
-      <input type="password" id="pwd" placeholder="Enter Dashboard Password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm mb-3" />
+      <p class="text-xs text-slate-400 mb-3">Default Password: <code class="text-blue-400">admin123</code></p>
+      <input type="password" id="pwd" placeholder="Enter Password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2.5 text-sm mb-3" />
       <button onclick="doLogin()" class="w-full bg-blue-600 hover:bg-blue-500 py-2.5 rounded-lg text-sm font-medium cursor-pointer">Login</button>
       <p id="loginErr" class="text-rose-400 text-xs mt-2"></p>
     </div>
@@ -460,12 +601,12 @@ const HTML = `<!DOCTYPE html>
             </select>
           </div>
           <div id="priceDiv" class="md:col-span-4 hidden">
-            <label class="text-xs text-emerald-400">Target Max Amount (₹) *</label>
-            <input type="number" id="targetPrice" min="1" placeholder="e.g. 400 (₹400 ya niche aane par)" class="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-sm mt-1" />
+            <label class="text-xs text-emerald-400">Target Max Price (₹) *</label>
+            <input type="number" id="targetPrice" min="1" placeholder="e.g. 800 (₹800 ya niche aane par)" class="w-full bg-slate-950 border border-emerald-500/50 rounded-lg px-3 py-2 text-sm mt-1" />
           </div>
           <div id="discDiv" class="md:col-span-4 hidden">
             <label class="text-xs text-amber-400">Target Discount % *</label>
-            <input type="number" id="targetDiscount" min="1" max="99" placeholder="e.g. 50 (50% ya zyada OFF par)" class="w-full bg-slate-950 border border-amber-500/50 rounded-lg px-3 py-2 text-sm mt-1" />
+            <input type="number" id="targetDiscount" min="1" max="99" placeholder="e.g. 20 (20% ya zyada OFF par)" class="w-full bg-slate-950 border border-amber-500/50 rounded-lg px-3 py-2 text-sm mt-1" />
           </div>
           <div id="nameDiv" class="md:col-span-12">
             <label class="text-xs text-slate-400">Product Name (Optional - Auto Detect Hoga)</label>
@@ -478,8 +619,8 @@ const HTML = `<!DOCTYPE html>
       </div>
 
       <div class="flex items-center justify-between mb-3">
-        <h2 class="text-base font-semibold text-slate-200">Active Tracking List (Live Data)</h2>
-        <button onclick="loadList()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1 rounded cursor-pointer">Refresh Now</button>
+        <h2 class="text-base font-semibold text-slate-200">Active Tracking List (Live Verified Data)</h2>
+        <button onclick="loadList()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded cursor-pointer">Refresh Now</button>
       </div>
       <div id="list" class="space-y-3"></div>
     </div>
@@ -557,23 +698,31 @@ const HTML = `<!DOCTYPE html>
           targetTag = '<span class="px-2 py-0.5 text-xs rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">Target Discount: ≥ ' + p.target_discount + '% OFF</span>';
         }
 
+        const thumb = p.image_url
+          ? '<img src="' + p.image_url + '" class="w-14 h-14 object-contain bg-white rounded-lg p-1 shrink-0" />'
+          : '<div class="w-14 h-14 bg-slate-800 rounded-lg flex items-center justify-center text-xs text-slate-500 shrink-0">FK</div>';
+
         return \`
-          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row justify-between gap-3">
-            <div class="space-y-1.5">
-              <div class="flex items-center gap-2 flex-wrap">
-                <a href="\${p.url}" target="_blank" class="font-semibold text-slate-100 hover:text-blue-400">\${p.name}</a>
-                \${statusBadge}
-                \${targetTag}
-              </div>
-              <div class="text-xs text-slate-400 flex flex-wrap gap-4">
-                <span>📍 PIN: <b class="text-slate-200">\${p.pincode}</b></span>
-                <span>💰 Live Price: <b class="text-slate-200">\${p.last_price ? '₹' + Number(p.last_price).toLocaleString('en-IN') : '-'}</b></span>
-                <span>🏷️ MRP: <b class="text-slate-400">\${p.last_mrp ? '₹' + Number(p.last_mrp).toLocaleString('en-IN') : '-'}</b></span>
-                <span>🔥 Live Discount: <b class="text-emerald-400">\${p.last_discount || 0}% OFF</b></span>
-                <span>🕒 Checked: \${p.last_checked_at ? new Date(p.last_checked_at).toLocaleTimeString('en-IN') : 'Checking...'}</span>
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div class="flex items-start gap-3.5">
+              \${thumb}
+              <div class="space-y-1.5">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <a href="\${p.url}" target="_blank" class="font-semibold text-slate-100 hover:text-blue-400">\${p.name}</a>
+                  \${statusBadge}
+                  \${targetTag}
+                </div>
+                <div class="text-xs text-slate-400 flex flex-wrap gap-x-4 gap-y-1">
+                  <span>📍 PIN: <b class="text-slate-200">\${p.pincode}</b></span>
+                  <span>💰 Live Price: <b class="text-slate-100">\${p.last_price ? '₹' + Number(p.last_price).toLocaleString('en-IN') : '-'}</b></span>
+                  <span>🏷️ MRP: <b class="text-slate-400">\${p.last_mrp ? '₹' + Number(p.last_mrp).toLocaleString('en-IN') : '-'}</b></span>
+                  <span>🔥 Live Discount: <b class="text-emerald-400">\${p.last_discount || 0}% OFF</b></span>
+                  <span>📉 Lowest: <b class="text-blue-300">\${p.lowest_price ? '₹' + Number(p.lowest_price).toLocaleString('en-IN') : '-'}</b></span>
+                  <span>🕒 \${p.last_checked_at ? new Date(p.last_checked_at).toLocaleTimeString('en-IN') : 'Checking...'}</span>
+                </div>
               </div>
             </div>
-            <div class="flex items-center gap-2 shrink-0">
+            <div class="flex items-center gap-2 shrink-0 self-end md:self-center">
               <button onclick="toggleItem('\${p.id}', \${!p.active})" class="px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 cursor-pointer">\${p.active ? 'Pause' : 'Resume'}</button>
               <button onclick="delItem('\${p.id}')" class="px-3 py-1.5 text-xs rounded bg-rose-950 text-rose-300 border border-rose-800/40 cursor-pointer">Delete</button>
             </div>
@@ -617,7 +766,7 @@ const HTML = `<!DOCTYPE html>
 
     async function testTg() {
       const res = await api('/api/test-telegram', { method: 'POST' });
-      alert(res.ok ? '✅ Telegram Test Alert Sent!' : '❌ Failed - Check Bot Admin permissions');
+      alert(res.ok ? '✅ Telegram Deal Card Sent!' : '❌ Failed - Check Bot Admin permissions');
     }
 
     if (token) loadList();
@@ -631,7 +780,7 @@ const HTML = `<!DOCTYPE html>
 // API ROUTES
 // =========================================================================
 app.get('/', (req, res) => res.type('html').send(HTML));
-app.get('/ping', (req, res) => res.send('OK - 24x7 Active'));
+app.get('/ping', (req, res) => res.send('OK - Sniper 24x7 Active'));
 
 app.get('/api/products', checkAuth, async (req, res) => {
   const { data, error } = await supabase.from('tracked_products').select('*').order('created_at', { ascending: false });
@@ -654,6 +803,8 @@ app.post('/api/products', checkAuth, async (req, res) => {
   const { error } = await supabase.from('tracked_products').insert([{
     name: name?.trim() || 'Flipkart Product',
     url: parsed.clean,
+    pid: parsed.pid || null,
+    lid: parsed.lid || null,
     pincode: String(pincode).trim(),
     mode: validMode,
     target_price: validMode === 'PRICE' ? Number(targetPrice) : null,
@@ -685,13 +836,18 @@ app.delete('/api/products/:id', checkAuth, async (req, res) => {
 app.post('/api/test-telegram', checkAuth, async (req, res) => {
   const r = await sendTelegram(
     { name: 'Test Product', pincode: '462023', url: 'https://www.flipkart.com' },
-    { title: 'Render + Supabase 24x7 Tracker Active!', price: 82900, mrp: 89900, discount: 8 },
-    'TEST ALERT SUCCESSFUL!'
+    {
+      title: 'Apple iPhone 17 (Lavender, 256 GB)',
+      price: 82900,
+      mrp: 89900,
+      discount: 8
+    },
+    'SNIPER BOT ACTIVE & CONNECTED!'
   );
   res.status(r.ok ? 200 : 500).json(r);
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🎯 Flipkart Sniper Tracker Live on Port ${PORT}`);
   checkAllProducts();
 });
